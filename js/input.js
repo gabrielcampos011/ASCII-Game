@@ -1,112 +1,88 @@
 /*
- * input.js — teclado (WASD/setas) e D-pad de toque.
+ * input.js — teclado (WASD/setas/E/Espaço/R) e botões de toque.
  *
- * Ideia importante: os eventos (keydown, pointerdown...) acontecem a
- * QUALQUER momento, mas o jogo só "olha" para eles uma vez a cada passo
- * do game loop. Então este arquivo apenas ANOTA o que o jogador quer:
+ * Os eventos acontecem a qualquer momento, mas o jogo só "olha" para
+ * eles uma vez por passo do game loop. Então aqui só ANOTAMOS:
  *
- *   held  -> quais direções estão pressionadas agora (para segurar e andar)
- *   queue -> toques rápidos que ainda não viraram movimento (não perde cliques)
- *
- * O main.js chama Game.Input.nextDirection() a cada passo.
+ *   held    -> direções seguradas agora (segurar = andar continuamente)
+ *   queue   -> toques rápidos ainda não consumidos (não perde cliques)
+ *   actions -> ações especiais: "potion", "wait", "restart", "confirm"
  */
 (function () {
-  // Cada direção vira um deslocamento (dx, dy). Y cresce para BAIXO.
   const DIRS = {
-    up:    { dx: 0,  dy: -1 },
-    down:  { dx: 0,  dy: 1 },
-    left:  { dx: -1, dy: 0 },
-    right: { dx: 1,  dy: 0 },
+    up: { dx: 0, dy: -1 }, down: { dx: 0, dy: 1 },
+    left: { dx: -1, dy: 0 }, right: { dx: 1, dy: 0 },
   };
-
-  // Teclas -> direção
   const KEYS = {
-    ArrowUp: "up", w: "up", W: "up",
-    ArrowDown: "down", s: "down", S: "down",
-    ArrowLeft: "left", a: "left", A: "left",
-    ArrowRight: "right", d: "right", D: "right",
+    ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down",
+    ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
   };
 
-  const held = [];   // direções seguradas (a última é a mais recente)
-  const queue = [];  // toques pendentes
-  let restartRequested = false;
+  const held = [], queue = [], actions = [];
+  let any = false;                       // alguma entrada aconteceu? (tela de título)
 
   function press(dir) {
     if (!held.includes(dir)) held.push(dir);
-    queue.push(dir);
+    queue.push(dir); any = true;
   }
   function release(dir) {
     const i = held.indexOf(dir);
     if (i !== -1) held.splice(i, 1);
   }
+  function act(name) { actions.push(name); any = true; }
 
   // ---------- Teclado ----------
   window.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const dir = KEYS[e.key];
-    if (dir) {
-      e.preventDefault();               // setas não rolam a página
-      if (!e.repeat) press(dir);        // ignora repetição automática do SO
-    } else if (e.key === "r" || e.key === "R" || e.key === "Enter") {
-      restartRequested = true;
-    }
+    if (dir) { e.preventDefault(); if (!e.repeat) press(dir); return; }
+    if (e.key === " ") { e.preventDefault(); if (!e.repeat) act("wait"); }
+    else if (e.key === "e" || e.key === "E" || e.key === "q" || e.key === "Q") { if (!e.repeat) act("potion"); }
+    else if (e.key === "r" || e.key === "R") act("restart");
+    else if (e.key === "Enter") act("confirm");
+    else any = true;
   });
-  window.addEventListener("keyup", (e) => {
-    const dir = KEYS[e.key];
-    if (dir) release(dir);
-  });
-  // Se a janela perde o foco com tecla pressionada, não fica "andando sozinho"
-  window.addEventListener("blur", () => { held.length = 0; });
+  window.addEventListener("keyup", (e) => { const d = KEYS[e.key]; if (d) release(d); });
+  window.addEventListener("blur", () => { held.length = 0; });   // perdeu foco: para de andar
 
-  // ---------- D-pad de toque ----------
+  // ---------- Botões de toque ----------
   document.querySelectorAll("#dpad button").forEach((btn) => {
     const dir = btn.dataset.dir;
-
-    // pointerdown cobre dedo, mouse e caneta com um único evento
     btn.addEventListener("pointerdown", (e) => {
-      e.preventDefault();               // evita zoom/seleção/menu de pressionar
-      btn.setPointerCapture(e.pointerId); // continua recebendo eventos mesmo se o dedo sair do botão
-      btn.classList.add("on");
-      press(dir);
+      e.preventDefault();                       // sem zoom/seleção/menu
+      btn.setPointerCapture(e.pointerId);       // continua valendo se o dedo escorregar
+      btn.classList.add("on"); press(dir);
     });
     const stop = () => { btn.classList.remove("on"); release(dir); };
     btn.addEventListener("pointerup", stop);
     btn.addEventListener("pointercancel", stop);
-    // Bloqueia o menu de contexto (toque longo)
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+  document.querySelectorAll("#actions button").forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => { e.preventDefault(); act(btn.dataset.act); });
     btn.addEventListener("contextmenu", (e) => e.preventDefault());
   });
 
-  // Botão reiniciar
-  document.getElementById("restart").addEventListener("click", () => {
-    restartRequested = true;
-  });
-
-  // Bloqueia gestos de pinça (iOS Safari ignora user-scalable=no)
-  ["gesturestart", "gesturechange"].forEach((t) =>
-    document.addEventListener(t, (e) => e.preventDefault())
-  );
-  // Bloqueia rolagem por arrastar em qualquer lugar da página
+  // ---------- Bloqueios de zoom/rolagem (o iOS ignora user-scalable=no) ----------
+  ["gesturestart", "gesturechange"].forEach((t) => document.addEventListener(t, (e) => e.preventDefault()));
   document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
-  // Bloqueia zoom por toque duplo rápido (iOS)
-  let lastTouchEnd = 0;
+  let lastEnd = 0;
   document.addEventListener("touchend", (e) => {
-    const now = Date.now();
-    if (now - lastTouchEnd < 300) e.preventDefault();
-    lastTouchEnd = now;
+    const n = Date.now();
+    if (n - lastEnd < 300) e.preventDefault();   // toque duplo rápido = zoom no iOS
+    lastEnd = n;
   }, { passive: false });
 
   // ---------- API usada pelo game loop ----------
   Game.Input = {
-    /** Devolve a próxima direção a andar neste passo, ou null. */
+    /** Próxima direção a andar neste passo (toque pendente ou tecla segurada). */
     nextDirection() {
       const dir = queue.shift() || held[held.length - 1];
-      queue.length = Math.min(queue.length, 2); // evita fila gigante
+      queue.length = Math.min(queue.length, 2);
       return dir ? DIRS[dir] : null;
     },
-    /** Verdadeiro (uma vez) se o jogador pediu para reiniciar. */
-    consumeRestart() {
-      const r = restartRequested;
-      restartRequested = false;
-      return r;
-    },
+    nextAction() { return actions.shift() || null; },
+    hadAnyInput() { const a = any; any = false; return a; },
+    clear() { queue.length = 0; actions.length = 0; any = false; },
   };
 })();

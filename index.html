@@ -2,44 +2,74 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <!--
-    viewport: width=device-width faz a página usar a largura real do celular.
-    user-scalable=no / maximum-scale=1 desligam o zoom por pinça e por toque duplo.
-    viewport-fit=cover usa a tela inteira (iPhones com "notch").
-  -->
+  <!-- Sem zoom por pinça/toque duplo; usa a tela toda em iPhones com "notch". -->
   <meta name="viewport"
         content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Caça-Moedas ASCII</title>
+  <meta name="theme-color" content="#0a0d14">
+  <title>Reino de Cinzas</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main id="app">
-    <!-- Placar: moedas pegas / total -->
+
+    <!-- Painel do herói -->
     <header id="hud">
-      <span>Moedas: <b id="coins">0/0</b></span>
-      <button id="restart" type="button">Reiniciar (R)</button>
+      <div class="row">
+        <span class="hero">Herói <b>Nv <span id="lv">1</span></b></span>
+        <span class="stat">Ouro <b id="gold" class="gold">0</b></span>
+        <span class="stat">Poções <b id="pot" class="pot">0</b></span>
+      </div>
+      <div class="bar hp"><i id="hpbar"></i><span id="hptxt"></span></div>
+      <div class="bar xp"><i id="xpbar"></i></div>
+      <div id="quest"></div>
     </header>
 
-    <!-- O mapa inteiro é um único texto dentro de <pre> -->
-    <pre id="screen" aria-label="Mapa do jogo"></pre>
+    <!-- "Tela" do jogo: o mapa é um <pre> cheio de <span> coloridos -->
+    <section id="stage">
+      <pre id="screen" aria-label="Mapa do jogo"></pre>
+      <div id="vignette"></div>
 
-    <!-- Mensagem de vitória (escondida até ganhar) -->
-    <p id="message" hidden>Você pegou todas as moedas! 🎉 Toque em Reiniciar.</p>
+      <div id="title" class="overlay">
+        <pre class="logo">╔══════════════════════╗
+║  REINO  DE  CINZAS   ║
+╚══════════════════════╝</pre>
+        <p class="sub">Um RPG em ASCII</p>
+        <p class="legend"><span class="hp-c">@</span> você &nbsp;<span style="color:#7fe3ff">&amp;</span> ancião &nbsp;<span style="color:#ffd24a">$</span> mercador<br>
+          <span style="color:#7dff6a">S</span> gosma &nbsp;<span style="color:#c79bff">v</span> morcego &nbsp;<span style="color:#e1e6f0">w</span> lobo &nbsp;<span style="color:#fff3d0">k</span> esqueleto &nbsp;<span style="color:#ff4b3a">D</span> dragão<br>
+          <span style="color:#ffcf4a">▣</span> baú &nbsp;<span style="color:#ff7ac8">!</span> poção</p>
+        <button id="startBtn" type="button" class="big">Começar aventura</button>
+      </div>
 
-    <!-- D-pad de toque (só aparece em telas de toque, veja o CSS) -->
-    <nav id="dpad" aria-label="Controles">
-      <button type="button" data-dir="up"    aria-label="Cima">▲</button>
-      <button type="button" data-dir="left"  aria-label="Esquerda">◀</button>
-      <button type="button" data-dir="down"  aria-label="Baixo">▼</button>
-      <button type="button" data-dir="right" aria-label="Direita">▶</button>
-    </nav>
+      <div id="end" class="overlay" hidden>
+        <h2 id="endTitle"></h2>
+        <p id="endText"></p>
+        <button id="againBtn" type="button" class="big">Jogar de novo</button>
+      </div>
+    </section>
+
+    <!-- Registro de mensagens -->
+    <section id="log" aria-live="polite"></section>
+
+    <!-- Controles de toque -->
+    <footer id="controls">
+      <nav id="dpad" aria-label="Direções">
+        <button type="button" data-dir="up"    aria-label="Cima">▲</button>
+        <button type="button" data-dir="left"  aria-label="Esquerda">◀</button>
+        <button type="button" data-dir="down"  aria-label="Baixo">▼</button>
+        <button type="button" data-dir="right" aria-label="Direita">▶</button>
+      </nav>
+      <div id="actions">
+        <button type="button" data-act="potion">Poção</button>
+        <button type="button" data-act="wait">Esperar</button>
+      </div>
+    </footer>
+    <p id="hint">WASD / setas: andar e atacar · E: poção · Espaço: esperar · R: reiniciar</p>
   </main>
 
-  <!--
-    Ordem importa: cada arquivo usa o que o anterior criou.
-    Todos expõem coisas dentro do objeto global "Game" (sem módulos/build).
-  -->
-  <script src="js/map.js"></script>
+  <!-- Ordem importa: cada arquivo usa o que os anteriores criaram. -->
+  <script src="js/tiles.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/game.js"></script>
   <script src="js/input.js"></script>
   <script src="js/render.js"></script>
   <script src="js/main.js"></script>
