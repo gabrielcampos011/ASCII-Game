@@ -1,0 +1,86 @@
+/* ---------- Base ---------- */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #0b0f0b;
+  color: #9fef9f;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace;
+  /* Sem rolagem da página e sem "puxar para atualizar" */
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* Sem zoom por toque duplo/pinça nem seleção de texto */
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+/* ---------- Placar ---------- */
+#hud {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-size: 16px;
+}
+#hud b { color: #ffd34d; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: #16231a;
+  border: 1px solid #3c6b45;
+  border-radius: 10px;
+  touch-action: manipulation; /* evita zoom de toque duplo nos botões */
+  cursor: pointer;
+}
+#restart { padding: 6px 12px; }
+
+/* ---------- Mapa ---------- */
+#screen {
+  margin: 0;
+  /* font-size é calculado pelo JS (render.js) para o mapa caber na largura */
+  font-size: 16px;
+  line-height: 1.1;
+  white-space: pre;      /* preserva espaços e quebras de linha */
+  font-family: inherit;
+}
+#screen .p { color: #4dd0ff; font-weight: bold; } /* jogador */
+#screen .c { color: #ffd34d; }                    /* moeda */
+#screen .w { color: #4a6b4f; }                    /* parede */
+
+#message { margin: 0; color: #ffd34d; text-align: center; }
+#message[hidden] { display: none; }
+
+/* ---------- D-pad ---------- */
+#dpad {
+  display: none; /* escondido no desktop */
+  grid-template-columns: repeat(3, 72px);
+  grid-template-rows: repeat(3, 72px);
+  gap: 8px;
+}
+/* Mostra o D-pad em dispositivos cujo ponteiro principal é o dedo */
+@media (pointer: coarse) {
+  #dpad { display: grid; }
+}
+#dpad button { font-size: 28px; }
+#dpad button:active, #dpad button.on { background: #2b5a36; }
+
+/* Posições no grid 3x3 (formato de cruz) */
+#dpad [data-dir="up"]    { grid-column: 2; grid-row: 1; }
+#dpad [data-dir="left"]  { grid-column: 1; grid-row: 2; }
+#dpad [data-dir="down"]  { grid-column: 2; grid-row: 3; }
+#dpad [data-dir="right"] { grid-column: 3; grid-row: 2; }

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <!--
+    viewport: width=device-width faz a página usar a largura real do celular.
+    user-scalable=no / maximum-scale=1 desligam o zoom por pinça e por toque duplo.
+    viewport-fit=cover usa a tela inteira (iPhones com "notch").
+  -->
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Caça-Moedas ASCII</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <!-- Placar: moedas pegas / total -->
+    <header id="hud">
+      <span>Moedas: <b id="coins">0/0</b></span>
+      <button id="restart" type="button">Reiniciar (R)</button>
+    </header>
+
+    <!-- O mapa inteiro é um único texto dentro de <pre> -->
+    <pre id="screen" aria-label="Mapa do jogo"></pre>
+
+    <!-- Mensagem de vitória (escondida até ganhar) -->
+    <p id="message" hidden>Você pegou todas as moedas! 🎉 Toque em Reiniciar.</p>
+
+    <!-- D-pad de toque (só aparece em telas de toque, veja o CSS) -->
+    <nav id="dpad" aria-label="Controles">
+      <button type="button" data-dir="up"    aria-label="Cima">▲</button>
+      <button type="button" data-dir="left"  aria-label="Esquerda">◀</button>
+      <button type="button" data-dir="down"  aria-label="Baixo">▼</button>
+      <button type="button" data-dir="right" aria-label="Direita">▶</button>
+    </nav>
+  </main>
+
+  <!--
+    Ordem importa: cada arquivo usa o que o anterior criou.
+    Todos expõem coisas dentro do objeto global "Game" (sem módulos/build).
+  -->
+  <script src="js/map.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
