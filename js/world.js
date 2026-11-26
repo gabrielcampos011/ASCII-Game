@@ -112,7 +112,7 @@ window.Game = window.Game || {};
       const s = 0.8 + rnd() * 0.9, tint = rnd();
       const sway = { base: h, h: 6.3 * s, phase: Game.hash(x, z, 7) * 6.283 };      // cada árvore balança com uma fase própria
       B.add(cyl, x, h - 0.2, z, 0, 0.55 * s, 2.6 * s, 0.55 * s, [0.30, 0.18, 0.11], 0.4, sway);
-      const leaf = tint < 0.7 ? [0.07, 0.32, 0.22] : [0.10, 0.40, 0.16];
+      const leaf = tint < 0.7 ? [0.10, 0.44, 0.32] : [0.14, 0.52, 0.22];
       B.add(cone, x, h + 1.0 * s, z, rnd() * 6, 3.8 * s, 2.8 * s, 3.8 * s, leaf, 0.55, sway);
       B.add(cone, x, h + 2.5 * s, z, rnd() * 6, 3.0 * s, 2.5 * s, 3.0 * s, leaf, 0.5, sway);
       B.add(cone, x, h + 3.9 * s, z, rnd() * 6, 2.0 * s, 2.3 * s, 2.0 * s, leaf, 0.4, sway);

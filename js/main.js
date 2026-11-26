@@ -80,8 +80,8 @@
   const cycleZoom = () => { const R = Game.Renderer; R.setZoom(R.getZoom() >= R.maxZoom() ? 1 : R.getZoom() + 1); };
   $("zoomBtn").addEventListener("click", cycleZoom);
 
-  // ---------- VISUAL: Cinema (imagem nítida, letras só como textura) / Misto / ASCII clássico ----------
-  const labelStyle = () => { $("styleBtn").textContent = "Visual: " + ["Cinema", "Misto", "ASCII clássico"][Game.Renderer.style]; };
+  // ---------- CORES das letras: coloridas / terminal verde / âmbar (o jogo é sempre 100% ASCII) ----------
+  const labelStyle = () => { $("styleBtn").textContent = "Cores: " + ["coloridas", "terminal verde", "âmbar"][Game.Renderer.style]; };
   labelStyle();
   $("styleBtn").addEventListener("click", () => { Game.Renderer.setStyle(Game.Renderer.style + 1); labelStyle(); if (state) state.dirty = true; });
 
