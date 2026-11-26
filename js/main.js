@@ -18,7 +18,7 @@
   const $ = (id) => document.getElementById(id);
   const IDLE = { mx: 0, my: 0, camDX: 0, camDY: 0, rot: -0.12, attack: false, dash: false, restart: false, any: false };
 
-  let lastHeart = 0, state, mode = "title", last = 0, acc = 0, worldData, hudKey = "", pausedAt = 0, helpFrom = "title";
+  let fpsT = 0, fpsN = 0, lastHeart = 0, state, mode = "title", last = 0, acc = 0, worldData, hudKey = "", pausedAt = 0, helpFrom = "title";
   const labelDetail = () => { $("detail").textContent = "Caracteres: " + ["pequenos", "médios", "grandes"][Game.Renderer.detail]; };
 
   function fail(msg) { $("nogl").hidden = false; $("nogl").querySelector("p").textContent = msg; }
@@ -169,6 +169,14 @@
     for (const ev of state.sfx) A.play(ev);
     state.sfx.length = 0;
     if (mode === "play" && state.player.hp > 0 && state.player.hp / state.player.maxHp < 0.3 && now - lastHeart > 900) { lastHeart = now; A.play({ n: "heart" }); }
+    // QUALIDADE AUTOMÁTICA: se o aparelho não aguenta (menos de ~35 quadros/s durante 3 s), passa para letras maiores
+    if (mode === "play" && !navigator.webdriver) {
+      fpsT += dt; fpsN++;
+      if (fpsT >= 3) {
+        if (fpsN / fpsT < 35 && Game.Renderer.detail < 2) { Game.Renderer.detail++; labelDetail(); Game.Renderer.resize(); }
+        fpsT = 0; fpsN = 0;
+      }
+    } else { fpsT = 0; fpsN = 0; }
     Game.Renderer.render(state);
     if (mode === "play" || mode === "over") drawHud();
     requestAnimationFrame(frame);

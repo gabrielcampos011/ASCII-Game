@@ -485,12 +485,11 @@ window.Game = window.Game || {};
     const dpr = Math.min(window.devicePixelRatio || 1, 3);          // usa toda a densidade do iPhone (3x)
     const cssW = window.innerWidth, cssH = window.innerHeight;
     const fine = window.matchMedia("(pointer: fine)").matches;     // computador (mouse)
-    // colunas desejadas (fino / médio / grande). No estilo "Cinema" as letras são só uma textura fina, então as células são bem pequenas.
-    const tbl = fine ? [230, 165, 105] : [190, 135, 85];
-    const target = tbl[R.detail] ?? 150;
-    const cw = Math.max(3, Math.min(12, Math.round(cssW / target)));
-    const ch = Math.round(cw * 1.9);
-    cellPx = [Math.round(cw * dpr), Math.round(ch * dpr)];
+    // TAMANHO DA LETRA EM PIXELS REAIS DA TELA (não em pixels CSS): num iPhone (DPR 3) 1 pixel CSS = 9 pixels reais,
+    // então definir em CSS dava letras gigantes e poucas colunas. Agora a letra tem ~5-9 pixels reais de largura em qualquer aparelho.
+    const devW = cssW * dpr;
+    const cwDev = Math.max(3, Math.min([5, 6, 9][R.detail] ?? 6, Math.floor(devW / 100)));   // pelo menos 100 colunas
+    cellPx = [cwDev, Math.round(cwDev * 1.9)];
     cols = Math.ceil((cssW * dpr) / cellPx[0]); rows = Math.ceil((cssH * dpr) / cellPx[1]);
     canvas.width = cols * cellPx[0]; canvas.height = rows * cellPx[1];
     canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
