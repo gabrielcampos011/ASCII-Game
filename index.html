@@ -22,7 +22,7 @@
     <div class="bar hp"><i id="hpbar"></i><span id="hptxt"></span></div>
     <div class="bar dash"><i id="dashbar"></i></div>
   </div>
-  <button id="detail" type="button">fino</button>
+  <button id="pauseBtn" type="button" aria-label="Pausar" hidden>❚❚ <span class="key">Esc / P</span></button>
   <div id="banner"></div>
 
   <!-- Controles de toque -->
@@ -32,7 +32,14 @@
     <button id="btnDash" type="button">DASH</button>
     <button id="btnAtk" type="button">ATACAR</button>
   </div>
-  <p id="hint">WASD andar · Mouse girar câmera · Clique/Espaço atacar · Shift dash · Q/E girar · R reiniciar</p>
+  <!-- Guia fixo de teclas (só no computador) -->
+  <aside id="hint" hidden>
+    <span><kbd>WASD</kbd> andar</span>
+    <span><kbd>Mouse</kbd> / <kbd>Q E</kbd> câmera</span>
+    <span><kbd>Clique</kbd> / <kbd>Espaço</kbd> atacar</span>
+    <span><kbd>Shift</kbd> dash</span>
+    <span><kbd>Esc</kbd> / <kbd>P</kbd> pausa</span>
+  </aside>
 
   <!-- Título -->
   <div id="title" class="overlay">
@@ -42,6 +49,40 @@
     <p class="sub">Um RPG de ação 3D em ASCII</p>
     <p class="legend">Sobreviva a 5 ondas de monstros sob a lua.<br>Ataque com a espada, desvie com o dash<br>e colete as orbes verdes para curar.</p>
     <button id="startBtn" type="button" class="big">Começar</button>
+    <button id="helpBtn" type="button" class="menu">Como jogar</button>
+  </div>
+
+  <!-- Pausa -->
+  <div id="pause" class="overlay" hidden>
+    <h2>PAUSADO</h2>
+    <button id="resumeBtn" type="button" class="big">Continuar</button>
+    <button id="restartBtn" type="button" class="menu">Reiniciar</button>
+    <button id="controlsBtn" type="button" class="menu">Controles</button>
+    <button id="detail" type="button" class="menu"></button>
+    <button id="quitBtn" type="button" class="menu">Menu inicial</button>
+  </div>
+
+  <!-- Guia de controles -->
+  <div id="help" class="overlay" hidden>
+    <h2>CONTROLES</h2>
+    <table class="desk">
+      <tr><th><kbd>W A S D</kbd> / setas</th><td>Andar</td></tr>
+      <tr><th><kbd>Mouse</kbd></th><td>Girar a câmera (clique na tela para travar o cursor)</td></tr>
+      <tr><th><kbd>Q</kbd> <kbd>E</kbd></th><td>Girar a câmera pelo teclado</td></tr>
+      <tr><th><kbd>Clique</kbd> / <kbd>Espaço</kbd> / <kbd>J</kbd></th><td>Atacar</td></tr>
+      <tr><th><kbd>Shift</kbd> / <kbd>K</kbd> / botão direito</th><td>Dash (desvia dos golpes)</td></tr>
+      <tr><th><kbd>Esc</kbd> / <kbd>P</kbd></th><td>Pausar e continuar</td></tr>
+      <tr><th><kbd>R</kbd> / <kbd>Enter</kbd></th><td>Jogar de novo no fim da partida</td></tr>
+    </table>
+    <table class="touch">
+      <tr><th>Lado esquerdo</th><td>Arraste para andar</td></tr>
+      <tr><th>Resto da tela</th><td>Arraste para girar a câmera</td></tr>
+      <tr><th>ATACAR</th><td>Golpe de espada</td></tr>
+      <tr><th>DASH</th><td>Desvia dos golpes</td></tr>
+      <tr><th>❚❚</th><td>Pausar</td></tr>
+    </table>
+    <p class="legend">Barra vermelha: vida · Barra azul: recarga do dash<br>Orbes <b>verdes</b> curam 15 de vida.</p>
+    <button id="backBtn" type="button" class="big">Voltar</button>
   </div>
 
   <!-- Fim de jogo -->
@@ -49,6 +90,7 @@
     <h2 id="endTitle"></h2>
     <p id="endText"></p>
     <button id="againBtn" type="button" class="big">Jogar de novo</button>
+    <button id="menuBtn" type="button" class="menu">Menu inicial</button>
   </div>
 
   <div id="nogl" class="overlay" hidden><p></p></div>

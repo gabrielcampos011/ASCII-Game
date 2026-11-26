@@ -22,7 +22,8 @@ window.Game = window.Game || {};
   const HDR = "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n";
   const R = (Game.Renderer = { meshes: {}, ok: false, detail: 0 });
   const SX = 4, SY = 8;                       // sub-pixels da cena por célula (4 de largura x 8 de altura)
-  const GLYPHS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("");   // ASCII imprimível
+  // ASCII imprimível SEM letras e números: só sinais, para a imagem não virar uma "sopa de letras"
+  const GLYPHS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).filter((c) => !/[A-Za-z0-9]/.test(c)).join("");
   const NG = GLYPHS.length;
   const SHADOW = 1024, EXT = 34;
   const L = (() => { const v = [0.62, 0.5, -0.25], l = Math.hypot(...v); return v.map((x) => x / l); })();
@@ -196,7 +197,7 @@ window.Game = window.Game || {};
       float m = sum / float(${SX * SY});
       vec3 avg = csum / max(wsum, 1e-4);
       float contrast = (hi - lo) / max(hi, 0.02);
-      float w = smoothstep(0.30, 0.70, contrast) * step(0.04, hi);     // 0 = área lisa (densidade), 1 = contorno (forma)
+      float w = smoothstep(0.45, 0.80, contrast) * step(0.04, hi);     // 0 = área lisa (densidade), 1 = contorno (forma)
       vec4 T[${SY}];
       float floorCov = clamp(lo * 0.9, 0.0, 1.0) * 0.55;              // base uniforme (densidade do "fundo" da célula)
       float amp = clamp((hi - lo) * 2.4, 0.0, 0.9);                    // contraste ABSOLUTO: pouco contraste = traço fraco
@@ -215,7 +216,7 @@ window.Game = window.Game || {};
       float tmean = 0.0;
       for (int j = 0; j < ${SY}; j++) tmean += dot(clamp(Lr[j] * 0.9, 0.0, 1.0) * 0.55, vec4(1.0));
       tmean /= float(${SX * SY});
-      float jit = (fract(sin(dot(vec2(cell), vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.05;
+      float jit = (fract(sin(dot(vec2(cell), vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
       float bd = 1e9; int di = 0;
       for (int r = 0; r < uRampN; r++) { float d = abs(uRampCov[r] - (tmean + jit)); if (d < bd) { bd = d; di = uRampIdx[r]; } }
       if (w < 0.5) bi = di;
@@ -229,22 +230,23 @@ window.Game = window.Game || {};
       vec4 a1 = texelFetch(uScene, ctr + ivec2(${SX}, 0), 0), a2 = texelFetch(uScene, ctr - ivec2(${SX}, 0), 0);
       vec4 a3 = texelFetch(uScene, ctr + ivec2(0, ${SY}), 0), a4 = texelFetch(uScene, ctr - ivec2(0, ${SY}), 0);
       glow = a1.rgb * a1.a + a2.rgb * a2.a + a3.rgb * a3.a + a4.rgb * a4.a;
-      vec3 bg = avg * 0.05 * step(0.03, hi) + glow * 0.018;
+      vec3 bg = avg * 0.28 * step(0.03, hi) + glow * 0.018;
       o0 = vec4(bg, float(bi) / 255.0);
       o1 = vec4(ink, em);
     }`;
   // PASSO B (uma execução por PIXEL da tela): desenha a letra escolhida em alta resolução.
   const SHOW_FS = HDR + `
-    uniform sampler2D uC0, uC1, uAtlas; uniform vec2 uGrid, uCell; uniform float uN; out vec4 o;
+    uniform sampler2D uC0, uC1, uAtlas; uniform vec2 uGrid, uCell; out vec4 o;
     void main(){
-      vec2 px = gl_FragCoord.xy, loc = fract(px / uCell);
-      ivec2 cell = ivec2(floor(px / uCell));
+      vec2 px = gl_FragCoord.xy;
+      ivec2 size = ivec2(uCell), ip = ivec2(px), cell = ip / size, loc = ip - cell * size;
       vec4 a = texelFetch(uC0, cell, 0), b = texelFetch(uC1, cell, 0);
       float idx = floor(a.a * 255.0 + 0.5);
-      float ga = texture(uAtlas, vec2((idx + clamp(loc.x, 0.02, 0.98)) / uN, loc.y)).r;
+      // 1 pixel do atlas = 1 pixel da tela: nada é ampliado nem reduzido, então a letra fica nítida
+      float ga = texelFetch(uAtlas, ivec2(int(idx) * size.x + loc.x, size.y - 1 - loc.y), 0).r;
       vec3 col = mix(a.rgb, b.rgb, ga);
       vec2 q2 = px / (uGrid * uCell) - 0.5;
-      col *= 1.0 - dot(q2, q2) * 0.8;
+      col *= 1.0 - dot(q2, q2) * 0.35;
       o = vec4(col, 1.0);
     }`;
 
@@ -301,15 +303,37 @@ window.Game = window.Game || {};
     return { fb, tex, rb };
   }
 
-  /** Cria (a) o atlas de letras para desenhar e (b) a textura de "formas" para comparar. */
-  function makeAtlas() {
-    const sw = 24, sh = 48, cv = document.createElement("canvas");
+  /** Desenha todas as letras lado a lado, cada uma numa caixa de sw x sh pixels. */
+  function drawGlyphs(sw, sh) {
+    const cv = document.createElement("canvas");
     cv.width = sw * NG; cv.height = sh;
     const c = cv.getContext("2d", { willReadFrequently: true });
     c.fillStyle = "#000"; c.fillRect(0, 0, cv.width, cv.height);
     c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "middle";
-    c.font = `bold 38px "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace`;
-    for (let i = 0; i < NG; i++) c.fillText(GLYPHS[i], i * sw + sw / 2, sh * 0.54);
+    const size = Math.max(5, Math.round(Math.min(sw * 1.58, sh * 0.82)));
+    c.font = `bold ${size}px "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace`;
+    for (let i = 0; i < NG; i++) {
+      c.save(); c.beginPath(); c.rect(i * sw, 0, sw, sh); c.clip();           // uma letra não invade a vizinha
+      c.fillText(GLYPHS[i], i * sw + Math.floor(sw / 2), Math.round(sh * 0.54));
+      c.restore();
+    }
+    return cv;
+  }
+
+  /** Atlas VISUAL: refeito a cada resize, no tamanho exato da célula na tela. */
+  function makeDisplayAtlas(sw, sh) {
+    const cv = drawGlyphs(sw, sh);
+    gl.activeTexture(gl.TEXTURE3);
+    if (texAtlas) gl.deleteTexture(texAtlas);
+    texAtlas = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texAtlas);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /** Cria a textura de "formas" das letras, usada para escolher a mais parecida. */
+  function makeAtlas() {
+    const sw = 24, sh = 48, cv = drawGlyphs(sw, sh), c = cv.getContext("2d");
 
     // (b) cobertura de cada letra em SX x SY sub-células (média do brilho do desenho)
     const img = c.getImageData(0, 0, cv.width, cv.height).data, pat = new Uint8Array(NG * SY * 4);
@@ -320,7 +344,7 @@ window.Game = window.Game || {};
       const j = SY - 1 - r;                                  // linha 0 = parte de baixo (como o WebGL)
       pat[(j * NG + g) * 4 + q] = Math.round(sum / (bw * bh));
     }
-    const RAMP_CH = " .`,:;-~=+*xX#%@";                       // letras para áreas lisas
+    const RAMP_CH = " .:-~=+*#%@";                       // letras para áreas lisas
     rampIdx = []; rampCov = [];
     for (const ch of RAMP_CH) {
       const g = GLYPHS.indexOf(ch); let sum = 0;
@@ -330,14 +354,6 @@ window.Game = window.Game || {};
     texPat = texture(4, NG, SY, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NG, SY, gl.RGBA, gl.UNSIGNED_BYTE, pat);
 
-    // (a) atlas visual
-    gl.activeTexture(gl.TEXTURE3);
-    texAtlas = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texAtlas);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
 
@@ -393,13 +409,15 @@ window.Game = window.Game || {};
   R.resize = function () {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);          // usa toda a densidade do iPhone (3x)
     const cssW = window.innerWidth, cssH = window.innerHeight;
-    const target = [170, 120, 80][R.detail] ?? 120;                  // colunas desejadas: fino / médio / grosso
+    const fine = window.matchMedia("(pointer: fine)").matches;     // computador (mouse)
+    const target = (fine ? [220, 160, 100] : [170, 120, 80])[R.detail] ?? 120;                  // colunas desejadas: fino / médio / grosso
     const cw = Math.max(3, Math.min(12, Math.round(cssW / target)));
     const ch = Math.round(cw * 1.9);
     cellPx = [Math.round(cw * dpr), Math.round(ch * dpr)];
     cols = Math.ceil((cssW * dpr) / cellPx[0]); rows = Math.ceil((cssH * dpr) / cellPx[1]);
     canvas.width = cols * cellPx[0]; canvas.height = rows * cellPx[1];
     canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
+    makeDisplayAtlas(cellPx[0], cellPx[1]);
     W = cols * SX; H = rows * SY;                                    // cena: 4x8 sub-pixels por célula
     if (fbScene) {
       for (const f of [fbScene, fbRefl]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); gl.deleteRenderbuffer(f.rb); }
@@ -589,7 +607,7 @@ window.Game = window.Game || {};
     // B) desenha as letras escolhidas em resolução total
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
     const a = progs.show; gl.useProgram(a.p);
-    gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]); gl.uniform1f(a.u.uN, NG);
+    gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST);
   };
