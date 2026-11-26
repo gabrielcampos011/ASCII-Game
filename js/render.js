@@ -80,7 +80,7 @@ window.Game = window.Game || {};
 
   const LIT_FS = HDR + `
     in vec3 vN; in vec3 vCol; in vec3 vWorld; in vec4 vLP;
-    uniform sampler2D uShadow;
+    uniform highp sampler2DShadow uShadow;
     uniform vec3 uLightDir, uLightCol, uAmbUp, uAmbDown, uCamPos, uFogCol, uRimCol;
     uniform float uEmissive, uClip, uFogDen, uExposure, uRim, uFill;
     out vec4 o;
@@ -89,13 +89,10 @@ window.Game = window.Game || {};
       vec3 p = vLP.xyz / vLP.w * 0.5 + 0.5;
       if (p.x < 0. || p.x > 1. || p.y < 0. || p.y > 1. || p.z > 1.) return 1.0;
       float bias = 0.0012 + 0.003 * (1.0 - ndl);
-      vec2 ts = 1.0 / vec2(textureSize(uShadow, 0));
-      float s = 0.0;
-      for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) {
-        float d = texture(uShadow, p.xy + vec2(float(x), float(y)) * ts * 1.4).r;
-        s += (p.z - bias > d) ? 0.0 : 1.0;
-      }
-      return s / 9.0;
+      vec2 ts = 0.75 / vec2(textureSize(uShadow, 0));
+      // 4 amostras, cada uma já filtrada 2x2 pelo hardware (sampler2DShadow) = sombra suave com 1/2 do custo
+      return 0.25 * (texture(uShadow, vec3(p.xy + vec2(-ts.x, -ts.y), p.z - bias)) + texture(uShadow, vec3(p.xy + vec2(ts.x, -ts.y), p.z - bias))
+                   + texture(uShadow, vec3(p.xy + vec2(-ts.x, ts.y), p.z - bias)) + texture(uShadow, vec3(p.xy + vec2(ts.x, ts.y), p.z - bias)));
     }
     void main(){
       if (vWorld.y < uClip) discard;
@@ -148,7 +145,7 @@ window.Game = window.Game || {};
     layout(location=0) in vec3 aBlade;
     layout(location=3) in vec4 aI0;   // x, y, z, giro
     layout(location=4) in vec4 aI1;   // altura, largura, variação, fase
-    uniform mat4 uViewProj, uLightVP; uniform sampler2D uShadow;
+    uniform mat4 uViewProj, uLightVP; uniform highp sampler2DShadow uShadow;
     uniform float uTime, uFogDen, uExposure; uniform vec3 uPlayer, uCamPos, uLightCol, uAmbUp, uFogCol;
     out vec3 vCol;
     ${TONE}
@@ -173,12 +170,7 @@ window.Game = window.Game || {};
       vec4 lq = uLightVP * vec4(aI0.xyz + vec3(0.0, 0.3, 0.0), 1.0);
       vec3 sp = lq.xyz / lq.w * 0.5 + 0.5;
       float sh = 1.0;
-      if (sp.x > 0.0 && sp.x < 1.0 && sp.y > 0.0 && sp.y < 1.0) {
-        vec2 ts = 1.0 / vec2(textureSize(uShadow, 0)); float t = 0.0;
-        for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++)
-          t += (sp.z - 0.002 > texture(uShadow, sp.xy + vec2(float(i), float(j)) * ts * 1.5).r) ? 0.0 : 1.0;
-        sh = t / 9.0;
-      }
+      if (sp.x > 0.0 && sp.x < 1.0 && sp.y > 0.0 && sp.y < 1.0) sh = texture(uShadow, vec3(sp.xy, sp.z - 0.002));   // 1 amostra com filtro de hardware
       vec3 base = vec3(0.05, 0.17, 0.10), tip = vec3(0.17, 0.44, 0.22);
       vec3 col = mix(base, tip, y) * (0.75 + 0.5 * aI1.z);
       col *= uAmbUp + uLightCol * sh * (0.3 + 0.5 * y);
@@ -268,12 +260,6 @@ window.Game = window.Game || {};
         vec4 ts = floorCov + (Lr[j] - lo) / max(hi - lo, 1e-3) * amp;
         T[j] = mix(td, ts, w);
       }
-      float best = 1e9; int bi = 0;
-      for (int g = 0; g < uN; g++) {
-        float e = 0.0;
-        for (int j = 0; j < ${SY}; j++) { vec4 d = T[j] - texelFetch(uPat, ivec2(g, j), 0); e += dot(d, d); }
-        if (e < best) { best = e; bi = g; }
-      }
       // áreas lisas: rampa de símbolos de "textura" (. : - = + * # @), nunca | ou _
       float tmean = 0.0;
       for (int j = 0; j < ${SY}; j++) tmean += dot(clamp(Lr[j] * 0.9, 0.0, 1.0) * 0.55, vec4(1.0));
@@ -281,7 +267,15 @@ window.Game = window.Game || {};
       float jit = (fract(sin(dot(vec2(cell), vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.012;
       float bd = 1e9; int di = 0;
       for (int r = 0; r < uRampN; r++) { float d = abs(uRampCov[r] - (tmean + jit)); if (d < bd) { bd = d; di = uRampIdx[r]; } }
-      if (w < 0.5) bi = di;
+      int bi = di;
+      if (w >= 0.5 && hi >= 0.05) {                                  // só contornos pagam a comparação com todas as letras
+        float best = 1e9;
+      for (int g = 0; g < uN; g++) {
+        float e = 0.0;
+        for (int j = 0; j < ${SY}; j++) { vec4 d = T[j] - texelFetch(uPat, ivec2(g, j), 0); e += dot(d, d); }
+        if (e < best) { best = e; bi = g; }
+      }
+      }
       if (hi < 0.05) bi = 0;                                           // escuro: espaço vazio
 
       // TINTA QUE PRESERVA A LUZ (como num meio-tom de gráfica): a letra cobre só uma parte da célula (cov);
@@ -453,6 +447,9 @@ window.Game = window.Game || {};
 
     // sombra: textura de profundidade
     texShadow = texture(1, SHADOW, SHADOW, gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texShadow);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
     fbShadow = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbShadow);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texShadow, 0);
     gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
@@ -504,7 +501,7 @@ window.Game = window.Game || {};
     fbScene = colorFBO(0, W, H);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);      // mipmaps: usados no brilho (bloom)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    RW = Math.max(64, Math.round(W * 0.75)); RH = Math.max(64, Math.round(H * 0.75));
+    RW = Math.max(64, Math.round(W * 0.5)); RH = Math.max(64, Math.round(H * 0.5));   // o reflexo é ondulado: não precisa de resolução cheia
     fbRefl = colorFBO(2, RW, RH);
     // uma textura pequena (1 pixel por célula) com duas camadas: fundo+letra e cor da tinta
     const t0 = texture(5, cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
@@ -569,17 +566,22 @@ window.Game = window.Game || {};
   }
 
   /** Desenha tudo que se mexe, usando "part" (que muda conforme a passada). */
-  function drawEntities(part, s, pass) {
+  /** Monta UMA vez por quadro a lista de peças (malha, matriz, cor, brilho) de tudo que se mexe. As 3 passadas
+   *  (sombra, reflexo, cena) só repetem a lista, sem recalcular as matrizes. nS/nR marcam até onde cada uma usa. */
+  const ENT = { L: [], nS: 0, nR: 0 };
+  function buildEntities(s) {
+    const L = ENT.L; L.length = 0;
+    const part = (m, mat, c, em) => { L.push(m, mat, c, em || 0); };
     const me = R.meshes, p = s.player, T = s.t;
     if (!s.over || s.over !== "lose") Game.Models.drawPlayer(part, p, T);
     for (const e of s.enemies) Game.Models.drawEnemy(part, e, T);
-    if (pass === "shadow") return;
+    ENT.nS = L.length;                                            // sombra usa só personagens
     for (const r of world.runes) part(me.cube, M.chain(M.T(r.x, r.y, r.z), M.Ry(r.yaw), M.S(r.w, r.h, 0.05)), [0.4, 0.95, 1.0], 1);
     for (const o of s.orbs) {
       const y = Game.World.height(o.x, o.z) + 0.7 + Math.sin(o.t * 3) * 0.15, k = 0.28 + Math.sin(o.t * 6) * 0.05;
       part(me.sph, M.chain(M.T(o.x, y, o.z), M.S(k, k, k)), [0.35, 1.0, 0.5], 1);
     }
-    if (pass === "reflect") return;
+    ENT.nR = L.length;                                            // reflexo usa até aqui (sem partículas e sangue)
     for (const d of s.decals) {                                   // sangue no chão (some devagar)
       const k = Math.min(1, d.life / 4);
       part(me.sph, M.chain(M.T(d.x, d.y, d.z), M.Ry(d.yaw), M.S(d.size, 0.05, d.size * 0.65)), [0.46 * k, 0.012 * k, 0.03 * k], 0.3);
@@ -599,6 +601,8 @@ window.Game = window.Game || {};
       part(me.cube, M.chain(M.T(x, y, z), M.S(sz, sz, sz)), [0.9 * b + 0.2, 1.0 * b + 0.2, 0.5 * b], 1);
     }
   }
+
+  function replay(fn, n) { const L = ENT.L; for (let i = 0; i < n; i += 4) fn(L[i], L[i + 1], L[i + 2], L[i + 3]); }
 
   /** Fita brilhante atrás da espada. */
   function buildRibbon(s) {
@@ -628,15 +632,17 @@ window.Game = window.Game || {};
     gl.uniform1f(u.uFogDen, 0.011); gl.uniform1f(u.uExposure, 1.15);
     gl.bindVertexArray(grassVAO); gl.bindBuffer(gl.ARRAY_BUFFER, grassBuf);
     for (const c of chunks) {
-      if (!c.count || Math.hypot(c.cx - cam.tx, c.cz - cam.tz) > 27) continue;
+      const dc = Math.hypot(c.cx - cam.tx, c.cz - cam.tz);
+      if (!c.count || dc > 23) continue;                          // grama só perto (a neblina esconde o resto)
       const off = c.start * 32;
       gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, off); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, off + 16);
-      gl.drawElementsInstanced(gl.TRIANGLES, bladeCount, gl.UNSIGNED_INT, 0, c.count);
+      gl.drawElementsInstanced(gl.TRIANGLES, bladeCount, gl.UNSIGNED_INT, 0, dc > 13 ? (c.count >> 1) : c.count);   // longe: metade das folhas
     }
   }
 
+  const prof = (name) => { if (!R.prof) return; gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, R._px || (R._px = new Uint8Array(4))); const n = performance.now(); R.prof[name] = (R.prof[name] || 0) + (n - R._pt); R._pt = n; };
   R.render = function (s) {
-    R._t = s.t;
+    R._t = s.t; if (R.prof) R._pt = performance.now();
     const cam = s.cam, p = s.player, me = R.meshes;
     cam.aspect = canvas.width / canvas.height;
     const view = M.lookAt([cam.x, cam.y, cam.z], [cam.tx, cam.ty, cam.tz], [0, 1, 0]);
@@ -662,8 +668,10 @@ window.Game = window.Game || {};
     gl.useProgram(progs.depth.p); const du2 = progs.depth.u; gl.uniform1f(du2.uTime, s.t);
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
     gl.uniformMatrix4fv(du2.uMVP, false, lightVP); draw(staticMesh);
-    drawEntities((m, mat, c, em) => { if (em >= 1) return; gl.uniformMatrix4fv(du2.uMVP, false, M.mul(lightVP, mat)); draw(m); }, s, "shadow");
+    buildEntities(s);
+    replay((m, mat, c, em) => { if (em >= 1) return; gl.uniformMatrix4fv(du2.uMVP, false, M.mul(lightVP, mat)); draw(m); }, ENT.nS);
     gl.disable(gl.POLYGON_OFFSET_FILL);
+    prof('1 sombra');
 
     const litPart = (m, mat, c, em) => {
       gl.uniformMatrix4fv(progs.lit.u.uModel, false, mat); gl.vertexAttrib4f(2, c[0], c[1], c[2], 1);
@@ -680,21 +688,21 @@ window.Game = window.Game || {};
     // ---- 2) REFLEXO (mundo espelhado em y=0; descarta o que está abaixo da água) ----
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbRefl.fb); gl.viewport(0, 0, RW, RH);
     gl.clearColor(0.03, 0.07, 0.1, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    drawSky(vpR);
     setLit(vpR, cam, -0.01); gl.uniform1f(progs.lit.u.uEmissive, 0);
     gl.uniformMatrix4fv(progs.lit.u.uModel, false, IDENT); draw(staticMesh);
-    drawEntities(litEnt, s, "reflect");
+    replay(litEnt, ENT.nR);
+    drawSky(vpR);                                                  // céu por último: só roda onde nada foi desenhado
+    prof('2 reflexo');
 
     // ---- 3) CENA ----
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb); gl.viewport(0, 0, W, H);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    drawSky(vp);
     setLit(vp, cam, -1e9);
     gl.uniform1f(progs.lit.u.uEmissive, 0);
     gl.uniformMatrix4fv(progs.lit.u.uModel, false, IDENT); draw(staticMesh);
-    drawGrass(vp, cam, s);
+    prof('3a cena: terreno+arvores'); drawGrass(vp, cam, s); prof('3b cena: grama');
     gl.useProgram(progs.lit.p);
-    drawEntities(litEnt, s, "main");
+    replay(litEnt, ENT.L.length);
     gl.uniform1f(progs.lit.u.uRim, 0.55);
     if (s.trail.length > 1) {                                 // rastro da espada
       buildRibbon(s);
@@ -706,17 +714,21 @@ window.Game = window.Game || {};
     gl.uniform1f(wu.uTime, s.t); gl.uniform1f(wu.uExposure, 1.15);
     gl.uniform3f(wu.uCamPos, cam.x, cam.y, cam.z); gl.uniform3f(wu.uLightDir, L[0], L[1], L[2]);
     draw(waterMesh);
+    drawSky(vp);
+    prof('3c cena: entidades+agua');
 
     // ---- 4) ASCII, em dois passos ----
     gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null);
     // A) uma execução por célula: escolhe a letra cuja FORMA mais se parece com o pedaço da imagem
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, fbScene.tex); gl.generateMipmap(gl.TEXTURE_2D);   // pirâmide de versões suavizadas da cena
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbCell.fb); gl.viewport(0, 0, cols, rows);
+    prof('3d mipmap');
     const m = progs.ascii; gl.useProgram(m.p); gl.uniform1i(m.u.uN, NG);
     gl.uniform2f(m.u.uCellPx, cellPx[0], cellPx[1]); gl.uniform2f(m.u.uCanvas, canvas.width, canvas.height);
     gl.uniform1f(m.u.uLod, Math.max(0, Math.log2(Math.max(cellPx[0] / SX * (W / canvas.width), cellPx[1] / SY * (H / canvas.height))) + 0.05));   // suaviza ~1 amostra por sub-célula
     gl.uniform1i(m.u.uRampN, rampIdx.length); gl.uniform1fv(m.u.uRampCov, rampCov); gl.uniform1iv(m.u.uRampIdx, rampIdx);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    prof('4a escolhe letras');
     // B) desenha as letras escolhidas em resolução total
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
     const a = progs.show; gl.useProgram(a.p);
@@ -724,6 +736,7 @@ window.Game = window.Game || {};
     gl.uniform1i(a.u.uZoom, zoom); gl.uniform1i(a.u.uStyle, R.style); gl.uniform2f(a.u.uCanvas, canvas.width, canvas.height);
     gl.uniform2i(a.u.uOff, Math.round((canvas.width / 2) * (zoom - 1)), Math.round((canvas.height / 2) * (zoom - 1)));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    prof('4b desenha letras');
     gl.enable(gl.DEPTH_TEST);
   };
 })();
