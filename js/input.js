@@ -52,11 +52,24 @@ window.Game = window.Game || {};
     if (e.pointerType === "mouse") return;
     st.any = true; try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ok */ } drags.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
+  // Pinça (2 dedos): afastar = ampliar as letras, aproximar = reduzir. Cada "degrau" muda 1x de zoom.
+  let pinchD = 0;
+  const pinchDist = () => { const [a, b] = [...drags.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
   canvas.addEventListener("pointermove", (e) => {
     const d = drags.get(e.pointerId); if (!d) return;
-    st.camDX -= e.clientX - d.x; st.camDY += e.clientY - d.y; d.x = e.clientX; d.y = e.clientY;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y; d.x = e.clientX; d.y = e.clientY;
+    if (drags.size >= 2) {                                   // pinça: não gira a câmera
+      const nd = pinchDist(); if (!pinchD) pinchD = nd;
+      const R = Game.Renderer;
+      if (R && R.setZoom) {
+        if (nd / pinchD > 1.28) { R.setZoom(R.getZoom() + 1); pinchD = nd; }
+        else if (nd / pinchD < 0.78) { R.setZoom(R.getZoom() - 1); pinchD = nd; }
+      }
+      return;
+    }
+    st.camDX -= dx; st.camDY += dy;
   });
-  const endDrag = (e) => drags.delete(e.pointerId);
+  const endDrag = (e) => { drags.delete(e.pointerId); pinchD = 0; };
   canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
 
   // ---------- Toque: joystick flutuante (aparece onde você encosta) ----------

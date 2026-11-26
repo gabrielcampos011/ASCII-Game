@@ -34,7 +34,7 @@
   function show(id) { for (const o of ["title", "pause", "help", "end"]) $(o).hidden = o !== id; }
   /** Liga/desliga o que só aparece durante a partida. */
   function setPlaying(on) {
-    $("pauseBtn").hidden = !on; $("hint").hidden = !on;
+    $("pauseBtn").hidden = !on; $("zoomBtn").hidden = !on; $("hint").hidden = !on;
     if (!on && document.pointerLockElement) document.exitPointerLock();
     if (document.activeElement) document.activeElement.blur();
     Game.Input.clear();
@@ -75,6 +75,9 @@
     Game.Renderer.resize();
   });
   $("pauseBtn").addEventListener("click", pause);
+  // ZOOM: 1x -> 2x -> 3x -> 4x -> 1x. Também muda com o gesto de pinça (veja input.js).
+  Game.Renderer.onZoom = (z) => { $("zoomVal").textContent = z + "×"; };
+  $("zoomBtn").addEventListener("click", () => { const R = Game.Renderer; R.setZoom(R.getZoom() >= R.maxZoom() ? 1 : R.getZoom() + 1); });
   $("resumeBtn").addEventListener("click", resume);
   $("restartBtn").addEventListener("click", startGame);
   $("quitBtn").addEventListener("click", toMenu);

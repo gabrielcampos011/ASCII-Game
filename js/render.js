@@ -28,6 +28,7 @@ window.Game = window.Game || {};
   const SHADOW = 1024, EXT = 34;
   const L = (() => { const v = [0.62, 0.5, -0.25], l = Math.hypot(...v); return v.map((x) => x / l); })();
 
+  let zoom = 1;
   let gl, canvas, world, W = 2, H = 2, cols = 10, rows = 10, cellPx = [8, 14];
   let progs = {}, U = {}, fbShadow, texShadow, fbScene, texScene, fbRefl, texRefl, texAtlas, texPat, fbCell, rampIdx, rampCov;
   let staticMesh, waterMesh, skyMesh, ribbon, grassBuf, grassVAO, bladeCount, chunks;
@@ -236,10 +237,13 @@ window.Game = window.Game || {};
     }`;
   // PASSO B (uma execução por PIXEL da tela): desenha a letra escolhida em alta resolução.
   const SHOW_FS = HDR + `
-    uniform sampler2D uC0, uC1, uAtlas; uniform vec2 uGrid, uCell; out vec4 o;
+    uniform sampler2D uC0, uC1, uAtlas; uniform vec2 uGrid, uCell; uniform int uZoom; uniform ivec2 uOff; out vec4 o;
     void main(){
       vec2 px = gl_FragCoord.xy;
-      ivec2 size = ivec2(uCell), ip = ivec2(px), cell = ip / size, loc = ip - cell * size;
+      // ZOOM: cada célula passa a ocupar uZoom x o tamanho, ampliando a grade em volta do centro da tela.
+      // O atlas foi refeito nesse tamanho maior, então as letras continuam nítidas (não é imagem esticada).
+      ivec2 size = ivec2(uCell) * uZoom, u = ivec2(px) + uOff, cell = u / size, loc = u - cell * size;
+      if (u.x < 0 || u.y < 0 || cell.x >= int(uGrid.x) || cell.y >= int(uGrid.y)) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
       vec4 a = texelFetch(uC0, cell, 0), b = texelFetch(uC1, cell, 0);
       float idx = floor(a.a * 255.0 + 0.5);
       // 1 pixel do atlas = 1 pixel da tela: nada é ampliado nem reduzido, então a letra fica nítida
@@ -417,7 +421,8 @@ window.Game = window.Game || {};
     cols = Math.ceil((cssW * dpr) / cellPx[0]); rows = Math.ceil((cssH * dpr) / cellPx[1]);
     canvas.width = cols * cellPx[0]; canvas.height = rows * cellPx[1];
     canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
-    makeDisplayAtlas(cellPx[0], cellPx[1]);
+    zoom = Math.min(zoom, maxZoom());
+    makeDisplayAtlas(cellPx[0] * zoom, cellPx[1] * zoom);
     W = cols * SX; H = rows * SY;                                    // cena: 4x8 sub-pixels por célula
     if (fbScene) {
       for (const f of [fbScene, fbRefl]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); gl.deleteRenderbuffer(f.rb); }
@@ -437,6 +442,23 @@ window.Game = window.Game || {};
     R.cols = cols; R.rows = rows;
   };
 
+
+  /** Maior zoom que cabe numa textura (o atlas tem NG letras lado a lado). */
+  function maxZoom() {
+    const lim = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    let z = 4;
+    while (z > 1 && (NG * cellPx[0] * z > lim || cellPx[1] * z > lim)) z--;
+    return z;
+  }
+  /** Zoom de 1x a 4x. Refaz as letras no tamanho ampliado (nítidas, não esticadas). */
+  R.setZoom = function (z) {
+    z = Math.max(1, Math.min(maxZoom(), Math.round(z)));
+    if (z !== zoom) { zoom = z; makeDisplayAtlas(cellPx[0] * zoom, cellPx[1] * zoom); }
+    if (R.onZoom) R.onZoom(zoom);
+    return zoom;
+  };
+  R.getZoom = () => zoom;
+  R.maxZoom = () => (gl ? maxZoom() : 1);
 
   /** Depuração: devolve a imagem 3D "crua" (antes de virar caracteres) como PNG. */
   R.dumpScene = function () {
@@ -608,6 +630,8 @@ window.Game = window.Game || {};
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
     const a = progs.show; gl.useProgram(a.p);
     gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]);
+    gl.uniform1i(a.u.uZoom, zoom);
+    gl.uniform2i(a.u.uOff, Math.round((canvas.width / 2) * (zoom - 1)), Math.round((canvas.height / 2) * (zoom - 1)));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST);
   };

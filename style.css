@@ -41,6 +41,16 @@ button.on, button:active { background: rgba(40, 110, 150, .8); }
   padding: 8px 14px; font-size: 14px; background: rgba(2, 8, 14, .82);
 }
 #pauseBtn[hidden] { display: none; }
+/* botão de zoom: só em telas de toque, logo abaixo do botão de pausa */
+#zoomBtn { display: none; }
+@media (pointer: coarse) {
+  #zoomBtn {
+    display: block; position: fixed; z-index: 2; right: 12px; top: calc(max(10px, env(safe-area-inset-top)) + 54px);
+    min-width: 48px; min-height: 44px; padding: 8px 14px; font-size: 13px; letter-spacing: .06em; background: rgba(2, 8, 14, .82);
+  }
+  #zoomBtn[hidden] { display: none; }
+  #zoomBtn b { color: #ffd98a; margin-left: 4px; }
+}
 #pauseBtn .key { margin-left: 6px; color: #8fb4c4; font-size: 12px; }
 kbd { font: inherit; font-weight: bold; color: #ffd98a; border: 1px solid #4a7f9e; border-radius: 4px; padding: 0 5px; background: #0a1a26; }
 #banner {
