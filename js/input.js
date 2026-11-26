@@ -21,6 +21,7 @@ window.Game = window.Game || {};
   window.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
+    if ((k === " " || k === "enter") && e.target.closest && e.target.closest("button")) return;   // aciona o botão focado
     if (MOVE.includes(k)) e.preventDefault();
     st.any = true;
     if (e.repeat) return;
@@ -96,7 +97,10 @@ window.Game = window.Game || {};
 
   // ---------- Bloqueios de zoom/rolagem (o iOS ignora user-scalable=no) ----------
   ["gesturestart", "gesturechange"].forEach((t) => document.addEventListener(t, (e) => e.preventDefault()));
-  document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+  document.addEventListener("touchmove", (e) => {
+    if (e.target.closest && e.target.closest(".overlay")) return;          // telas de menu podem rolar
+    e.preventDefault();
+  }, { passive: false });
   let lastEnd = 0;
   document.addEventListener("touchend", (e) => {
     const n = Date.now(); if (n - lastEnd < 300) e.preventDefault(); lastEnd = n;
@@ -117,6 +121,11 @@ window.Game = window.Game || {};
       st.camDX = st.camDY = 0; st.attack = st.dash = st.restart = st.any = false;
       return r;
     },
-    clear() { st.attack = st.dash = st.restart = st.any = false; st.camDX = st.camDY = 0; },
+    clear() {
+      st.attack = st.dash = st.restart = st.any = false; st.camDX = st.camDY = 0;
+      // solta teclas, joystick e arrastos (ex.: ao pausar)
+      keys.clear(); drags.clear(); stickId = null; st.stickX = st.stickY = 0; base.classList.remove("on");
+      for (const id of ["btnAtk", "btnDash"]) $(id).classList.remove("on");
+    },
   };
 })();

@@ -34,9 +34,15 @@ button.on, button:active { background: rgba(40, 110, 150, .8); }
 .bar.dash { height: 5px; }
 .bar.dash i { background: linear-gradient(#9be8ff, #3aa6e0); }
 
-#detail {
-  position: fixed; right: 12px; top: max(10px, env(safe-area-inset-top)); padding: 6px 10px; font-size: 12px;
+/* painel com fundo próprio, para ler bem sobre o cenário */
+#hud { padding: 8px 10px; background: rgba(2, 8, 14, .78); border: 1px solid #2d5c78; border-radius: 10px; }
+#pauseBtn {
+  position: fixed; z-index: 2; right: 12px; top: max(10px, env(safe-area-inset-top)); min-width: 48px; min-height: 44px;
+  padding: 8px 14px; font-size: 14px; background: rgba(2, 8, 14, .82);
 }
+#pauseBtn[hidden] { display: none; }
+#pauseBtn .key { margin-left: 6px; color: #8fb4c4; font-size: 12px; }
+kbd { font: inherit; font-weight: bold; color: #ffd98a; border: 1px solid #4a7f9e; border-radius: 4px; padding: 0 5px; background: #0a1a26; }
 #banner {
   position: fixed; left: 0; right: 0; top: 24%; text-align: center; pointer-events: none;
   font-size: clamp(26px, 7vw, 54px); font-weight: bold; letter-spacing: .2em; color: #ffe6a8;
@@ -66,20 +72,31 @@ button.on, button:active { background: rgba(40, 110, 150, .8); }
   #btnAtk { right: 0; bottom: 0; width: 108px; height: 108px; font-size: 14px; border-color: #e0a64d; background: rgba(90, 50, 10, .6); }
   #btnAtk.on { background: rgba(200, 120, 30, .85); }
   #btnDash { left: 0; top: 0; width: 78px; height: 78px; font-size: 12px; border-color: #6cd0ff; }
-  #hint { display: none; }
+  #hint, #pauseBtn .key, #help .desk { display: none; }
 }
+@media not all and (pointer: coarse) { #help .touch { display: none; } }
 #hint {
-  position: fixed; left: 0; right: 0; bottom: 8px; margin: 0; text-align: center; font-size: 12px;
-  color: rgba(200, 230, 240, .55); pointer-events: none; text-shadow: 0 1px 2px #000;
+  position: fixed; left: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
+  font-size: 13px; color: #e2f2fa; pointer-events: none;
+  background: rgba(2, 8, 14, .82); border: 1px solid #2d5c78; border-radius: 10px;
 }
+#hint[hidden] { display: none; }
+@media (pointer: coarse) { #hint { display: none; } }
 
 /* ---------- Telas de título / fim ---------- */
 .overlay {
   position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 14px; padding: 18px; text-align: center; touch-action: manipulation;
-  background: radial-gradient(ellipse at center, rgba(2, 8, 14, .55), rgba(1, 4, 8, .86));
+  justify-content: safe center; gap: 14px; padding: 18px; text-align: center; overflow: auto; touch-action: pan-y;
+  background: radial-gradient(ellipse at center, rgba(2, 8, 14, .82), rgba(1, 4, 8, .94));
 }
 .overlay[hidden] { display: none; }
+.overlay > * { flex-shrink: 0; }
+.overlay h2 { margin: 0; letter-spacing: .12em; }
+.menu { min-width: 220px; min-height: 44px; padding: 10px 18px; font-size: 15px; }
+button:hover, button:focus-visible { border-color: #ffd98a; }
+#help table { border-collapse: collapse; text-align: left; font-size: 13px; max-width: 100%; }
+#help th, #help td { padding: 7px 10px; border-bottom: 1px solid #1c3c50; vertical-align: top; }
+#help th { color: #ffd98a; font-weight: bold; }
 .logo { margin: 0; color: #ffc46b; font-family: inherit; font-size: clamp(11px, 3.6vw, 20px); line-height: 1.2; text-shadow: 0 0 14px #ff7a1a; }
 .sub { margin: 0; color: #a9d4e6; font-size: 15px; }
 .legend { margin: 0; font-size: 13px; line-height: 1.7; color: #8fb4c4; }
