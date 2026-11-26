@@ -1,132 +1,512 @@
 /*
- * render.js — transforma o estado do jogo em imagem.
+ * render.js — o desenho 3D + a "conversão para ASCII".
  *
- * Regra de ouro: renderizar NÃO muda o jogo, só lê o estado.
+ * Por quadro, a GPU faz 4 passadas:
+ *   1. SOMBRA    : a cena vista da LUA, guardando só a profundidade
+ *                  (se um ponto está "atrás" de algo, está na sombra).
+ *   2. REFLEXO   : a cena de cabeça para baixo (espelhada em y=0);
+ *                  a água mostra essa imagem.
+ *   3. CENA      : o desenho normal, em BAIXA resolução (2x2 pixels por
+ *                  caractere). Fica numa textura, não na tela.
+ *   4. ASCII     : para cada "célula" da tela, olha a cor e o brilho da
+ *                  cena naquele lugar e desenha um caractere: mais claro
+ *                  = caractere mais "cheio"; bordas viram | - / \ .
  *
- * O mapa é um <pre> com um <span> por tile. Cada span ganha cor do
- * glifo, cor de fundo e "opacity" (luz): perto do herói é claro, longe
- * escurece, e o que já foi explorado fica apagado (névoa de guerra).
+ * Tudo é WebGL2 puro (sem bibliotecas). Os "shaders" são pequenos
+ * programas em GLSL que rodam na placa de vídeo, um por vértice/pixel.
  */
+window.Game = window.Game || {};
+
 (function () {
-  const ID = Game.ID, TL = Game.TILES;
-  const $ = (id) => document.getElementById(id);
-  const stage = $("stage"), screen = $("screen");
-  const els = {
-    lv: $("lv"), gold: $("gold"), pot: $("pot"), hpbar: $("hpbar"), hptxt: $("hptxt"),
-    xpbar: $("xpbar"), quest: $("quest"), log: $("log"),
+  const M = Game.M, Geo = Game.Geo;
+  const HDR = "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n";
+  const R = (Game.Renderer = { meshes: {}, ok: false, detail: 0 });
+  const RAMP = " .:-=+*#%@", EDGE = "-/|\\";
+  const SHADOW = 1024, EXT = 34;
+  const L = (() => { const v = [0.62, 0.5, -0.25], l = Math.hypot(...v); return v.map((x) => x / l); })();
+
+  let gl, canvas, world, W = 2, H = 2, cols = 10, rows = 10, cellPx = [8, 14];
+  let progs = {}, U = {}, fbShadow, texShadow, fbScene, texScene, fbRefl, texRefl, texAtlas;
+  let staticMesh, waterMesh, skyMesh, ribbon, grassBuf, grassVAO, bladeCount, chunks;
+
+  // =============================== SHADERS ===============================
+  const DEPTH_VS = HDR + `
+    layout(location=0) in vec3 aPos;
+    uniform mat4 uMVP;
+    void main(){ gl_Position = uMVP * vec4(aPos, 1.0); }`;
+  const DEPTH_FS = HDR + `void main(){}`;
+
+  const LIT_VS = HDR + `
+    layout(location=0) in vec3 aPos;
+    layout(location=1) in vec3 aNrm;
+    layout(location=2) in vec3 aCol;
+    uniform mat4 uModel, uViewProj, uLightVP;
+    out vec3 vN; out vec3 vCol; out vec3 vWorld; out vec4 vLP;
+    void main(){
+      vec4 w = uModel * vec4(aPos, 1.0);
+      vWorld = w.xyz; vN = normalize(mat3(uModel) * aNrm); vCol = aCol; vLP = uLightVP * w;
+      gl_Position = uViewProj * w;
+    }`;
+  const LIT_FS = HDR + `
+    in vec3 vN; in vec3 vCol; in vec3 vWorld; in vec4 vLP;
+    uniform sampler2D uShadow;
+    uniform vec3 uLightDir, uLightCol, uAmbUp, uAmbDown, uCamPos, uFogCol, uRimCol;
+    uniform float uEmissive, uClip, uFogDen, uExposure, uRim, uFill;
+    out vec4 o;
+    float shadowAt(float ndl){
+      vec3 p = vLP.xyz / vLP.w * 0.5 + 0.5;
+      if (p.x < 0. || p.x > 1. || p.y < 0. || p.y > 1. || p.z > 1.) return 1.0;
+      float bias = 0.0012 + 0.003 * (1.0 - ndl);
+      vec2 ts = 1.0 / vec2(textureSize(uShadow, 0));
+      float s = 0.0;
+      for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) {
+        float d = texture(uShadow, p.xy + vec2(float(x), float(y)) * ts * 1.4).r;
+        s += (p.z - bias > d) ? 0.0 : 1.0;
+      }
+      return s / 9.0;
+    }
+    void main(){
+      if (vWorld.y < uClip) discard;
+      vec3 N = normalize(vN), V = normalize(uCamPos - vWorld);
+      float ndl = max(dot(N, uLightDir), 0.0);
+      float sh = shadowAt(ndl);
+      vec3 amb = mix(uAmbDown, uAmbUp, N.y * 0.5 + 0.5);
+      vec3 col = vCol * (amb + uLightCol * ndl * sh);
+      float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * uRim;
+      col += uRimCol * rim * (0.35 + 0.65 * sh) * vCol * 2.0;
+      col += vCol * uFill * (0.25 + 0.75 * max(dot(N, V), 0.0)) * vec3(0.55, 0.72, 1.0);
+      float em = clamp(uEmissive, 0.0, 1.0);
+      col = mix(col, vCol * (1.0 + uEmissive * 1.6), em);
+      float d = length(uCamPos - vWorld);
+      col = mix(col, uFogCol, (1.0 - exp(-d * uFogDen)) * (1.0 - em * 0.8));
+      o = vec4(col * uExposure, uEmissive > 0.5 ? 1.0 : 0.0);
+    }`;
+
+  const SKY_VS = HDR + `
+    layout(location=0) in vec3 aPos;
+    uniform mat4 uViewProj; uniform vec3 uCamPos;
+    out vec3 vDir;
+    void main(){ vDir = normalize(aPos); vec4 p = uViewProj * vec4(aPos * 400.0 + uCamPos, 1.0); gl_Position = p.xyww; }`;
+  const SKY_FS = HDR + `
+    in vec3 vDir; uniform vec3 uMoon; uniform float uExposure; out vec4 o;
+    float h(vec3 p){ return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+    void main(){
+      vec3 d = normalize(vDir); float y = d.y;
+      vec3 hor = vec3(0.12, 0.25, 0.33), zen = vec3(0.012, 0.035, 0.11);
+      vec3 col = mix(hor, zen, pow(clamp(y, 0.0, 1.0), 0.5));
+      if (y < 0.0) col = mix(hor, vec3(0.02, 0.05, 0.06), clamp(-y * 4.0, 0.0, 1.0));
+      col += step(0.9968, h(floor(d * 230.0))) * vec3(0.8, 0.9, 1.0) * clamp(y * 3.0, 0.0, 1.0);
+      float m = dot(d, normalize(uMoon));
+      float disc = smoothstep(0.9972, 0.9984, m);
+      col += vec3(1.0, 0.97, 0.88) * disc * 2.5 + vec3(0.5, 0.62, 0.9) * pow(max(m, 0.0), 48.0) * 0.5 + vec3(0.3, 0.4, 0.7) * pow(max(m, 0.0), 6.0) * 0.12;
+      o = vec4(col * uExposure, disc > 0.5 ? 1.0 : 0.0);
+    }`;
+
+  const GRASS_VS = HDR + `
+    layout(location=0) in vec3 aBlade;
+    layout(location=3) in vec4 aI0;   // x, y, z, giro
+    layout(location=4) in vec4 aI1;   // altura, largura, variação, fase
+    uniform mat4 uViewProj, uLightVP; uniform sampler2D uShadow;
+    uniform float uTime, uFogDen, uExposure; uniform vec3 uPlayer, uCamPos, uLightCol, uAmbUp, uFogCol;
+    out vec3 vCol;
+    void main(){
+      float hgt = aI1.x, wid = aI1.y, y = aBlade.y;
+      float c = cos(aI0.w), s = sin(aI0.w);
+      vec3 lp = vec3(aBlade.x * wid, y * hgt, 0.0);
+      vec3 wp = vec3(c * lp.x + s * lp.z, lp.y, -s * lp.x + c * lp.z) + aI0.xyz;
+      // vento: ondas que andam pelo campo
+      float ph = uTime * 1.6 + aI0.x * 0.31 + aI0.z * 0.23 + aI1.w * 0.2;
+      float wind = (sin(ph) + 0.5 * sin(ph * 2.3 + 1.7)) * 0.17 * y * y * hgt;
+      wp.x += wind; wp.z += wind * 0.6;
+      // o herói amassa a grama
+      vec2 dv = aI0.xz - uPlayer.xz; float dist = length(dv);
+      float push = smoothstep(1.8, 0.0, dist);
+      wp.xz += normalize(dv + vec2(1e-4)) * push * y * 0.75 * hgt;
+      wp.y -= push * y * y * hgt * 0.5;
+      gl_Position = uViewProj * vec4(wp, 1.0);
+      // sombra lida na base da folha
+      vec4 lq = uLightVP * vec4(aI0.xyz + vec3(0.0, 0.3, 0.0), 1.0);
+      vec3 sp = lq.xyz / lq.w * 0.5 + 0.5;
+      float sh = 1.0;
+      if (sp.x > 0.0 && sp.x < 1.0 && sp.y > 0.0 && sp.y < 1.0) {
+        vec2 ts = 1.0 / vec2(textureSize(uShadow, 0)); float t = 0.0;
+        for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++)
+          t += (sp.z - 0.002 > texture(uShadow, sp.xy + vec2(float(i), float(j)) * ts * 1.5).r) ? 0.0 : 1.0;
+        sh = t / 9.0;
+      }
+      vec3 base = vec3(0.05, 0.17, 0.10), tip = vec3(0.17, 0.44, 0.22);
+      vec3 col = mix(base, tip, y) * (0.75 + 0.5 * aI1.z);
+      col *= uAmbUp + uLightCol * sh * (0.3 + 0.5 * y);
+      float d = length(uCamPos - wp);
+      col = mix(col, uFogCol, 1.0 - exp(-d * uFogDen));
+      vCol = col * uExposure;
+    }`;
+  const GRASS_FS = HDR + `in vec3 vCol; out vec4 o; void main(){ o = vec4(vCol, 0.0); }`;
+
+  const WATER_VS = HDR + `
+    layout(location=0) in vec3 aPos;
+    layout(location=2) in vec3 aCol;
+    uniform mat4 uViewProj; out vec3 vWorld; out float vDepth;
+    void main(){ vWorld = aPos; vDepth = aCol.x; gl_Position = uViewProj * vec4(aPos, 1.0); }`;
+  const WATER_FS = HDR + `
+    in vec3 vWorld; in float vDepth;
+    uniform sampler2D uRefl; uniform vec2 uRes; uniform float uTime, uExposure; uniform vec3 uCamPos, uLightDir;
+    out vec4 o;
+    void main(){
+      vec2 uv = gl_FragCoord.xy / uRes; vec3 p = vWorld;
+      vec2 w = vec2(sin(p.x * 1.1 + uTime * 1.3) + 0.6 * sin(p.z * 1.9 - uTime * 1.1) + 0.4 * sin((p.x + p.z) * 2.7 + uTime * 2.0),
+                    cos(p.z * 1.2 + uTime * 1.1) + 0.6 * sin(p.x * 2.1 + uTime * 1.4) + 0.4 * cos((p.x - p.z) * 2.3 - uTime * 1.7));
+      vec2 off = w * 0.007;
+      vec3 refl = texture(uRefl, clamp(uv + off, 0.002, 0.998)).rgb;
+      vec3 V = normalize(uCamPos - p);
+      float fres = clamp(0.3 + 0.7 * pow(1.0 - V.y, 3.0), 0.0, 1.0);
+      vec3 body = mix(vec3(0.06, 0.30, 0.34), vec3(0.01, 0.06, 0.11), smoothstep(0.0, 1.8, vDepth)) * uExposure;
+      vec3 col = mix(body, refl, fres * 0.85 + 0.1);
+      vec3 N = normalize(vec3(-off.x * 9.0, 1.0, -off.y * 9.0));
+      float spec = pow(max(dot(reflect(-uLightDir, N), V), 0.0), 70.0);
+      col += vec3(0.8, 0.92, 1.0) * spec * 1.6;
+      float foam = smoothstep(0.4, 0.0, vDepth) * (0.5 + 0.5 * sin(vDepth * 30.0 - uTime * 2.2 + p.x * 0.7));
+      col += vec3(0.45, 0.8, 0.8) * foam * 0.55;
+      o = vec4(col, (spec > 0.35 || foam > 0.7) ? 1.0 : 0.0);
+    }`;
+
+  const ASCII_VS = HDR + `void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+  const ASCII_FS = HDR + `
+    uniform sampler2D uScene, uAtlas; uniform vec2 uGrid, uCell; uniform float uRamp, uTotal; out vec4 o;
+    float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+    void main(){
+      vec2 px = gl_FragCoord.xy, cell = floor(px / uCell), loc = fract(px / uCell);
+      vec2 uv = (cell + 0.5) / uGrid, d = 1.0 / uGrid;
+      vec4 c = texture(uScene, uv);
+      vec4 nl = texture(uScene, uv - vec2(d.x, 0.0)), nr = texture(uScene, uv + vec2(d.x, 0.0));
+      vec4 nd = texture(uScene, uv - vec2(0.0, d.y)), nu = texture(uScene, uv + vec2(0.0, d.y));
+      float Lm = lum(c.rgb);
+      float gx = lum(nr.rgb) - lum(nl.rgb), gy = lum(nu.rgb) - lum(nd.rgb);
+      float mag = length(vec2(gx, gy));
+      float idx;
+      if (mag > 0.24 && Lm > 0.06) {            // borda: escolhe | - / \\ pela direção
+        float a = mod(atan(gy, gx) + 1.5708, 3.14159265);
+        float q = floor(a / 0.785398 + 0.5); if (q >= 4.0) q = 0.0;
+        idx = uRamp + q;
+      } else {                                  // área: quanto mais claro, mais "cheio" o caractere
+        float v = pow(clamp(Lm * 1.35, 0.0, 1.0), 1.25);
+        idx = clamp(floor(v * (uRamp - 1.0) + 0.5 + (hash(cell) - 0.5) * 0.35), 0.0, uRamp - 1.0);
+        if (Lm < 0.03) idx = 0.0;
+      }
+      float ga = texture(uAtlas, vec2((idx + clamp(loc.x, 0.04, 0.96)) / uTotal, loc.y)).r;
+      vec3 hue = mix(vec3(1.0), c.rgb / max(max(c.r, max(c.g, c.b)), 0.02), 0.72);
+      float br = 0.34 + 1.05 * pow(clamp(Lm, 0.0, 1.0), 0.55);
+      vec3 ink = hue * br * (1.0 + c.a * 0.7);
+      vec3 glow = (nl.rgb * nl.a + nr.rgb * nr.a + nd.rgb * nd.a + nu.rgb * nu.a) * 0.10 + c.rgb * c.a * 0.15;
+      vec3 bg = c.rgb * 0.07 + glow * 0.5;
+      vec3 col = mix(bg, ink, ga);
+      vec2 q2 = px / (uGrid * uCell) - 0.5;
+      col *= 1.0 - dot(q2, q2) * 0.8;
+      o = vec4(col, 1.0);
+    }`;
+
+  // =============================== AJUDANTES GL ===============================
+  function compile(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + "\n" + src.split("\n").map((l, i) => (i + 1) + ": " + l).join("\n"));
+    return s;
+  }
+  function program(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const cache = {};
+    return { p, u: new Proxy(cache, { get: (o, k) => (k in o ? o[k] : (o[k] = gl.getUniformLocation(p, k))) }) };
+  }
+  function mesh(d, dynamic) {
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const bufs = {};
+    const attr = (loc, data, size) => {
+      const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, data, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); return b;
+    };
+    bufs.pos = attr(0, d.pos, 3);
+    if (d.nrm) bufs.nrm = attr(1, d.nrm, 3);
+    if (d.col) bufs.col = attr(2, d.col, 3);
+    let count;
+    if (d.idx) { const e = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, e); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, d.idx, gl.STATIC_DRAW); count = d.idx.length; }
+    else count = d.pos.length / 3;
+    gl.bindVertexArray(null);
+    return { vao, count, indexed: !!d.idx, bufs };
+  }
+  function draw(m) {
+    gl.bindVertexArray(m.vao);
+    if (m.indexed) gl.drawElements(gl.TRIANGLES, m.count, gl.UNSIGNED_INT, 0); else gl.drawArrays(gl.TRIANGLES, 0, m.count);
+  }
+  function texture(unit, w, h, internal, format, type, filter) {
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  function colorFBO(unit, w, h) {
+    const tex = texture(unit, w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("FBO incompleto");
+    return { fb, tex, rb };
+  }
+
+  function makeAtlas() {
+    const chars = RAMP + EDGE, sw = 24, sh = 44, cv = document.createElement("canvas");
+    cv.width = sw * chars.length; cv.height = sh;
+    const c = cv.getContext("2d");
+    c.fillStyle = "#000"; c.fillRect(0, 0, cv.width, cv.height);
+    c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "middle";
+    c.font = `bold 34px "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace`;
+    for (let i = 0; i < chars.length; i++) c.fillText(chars[i], i * sw + sw / 2, sh * 0.54);
+    gl.activeTexture(gl.TEXTURE3);
+    texAtlas = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texAtlas);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  // =============================== INICIALIZAÇÃO ===============================
+  R.init = function (cv, worldData) {
+    canvas = cv;
+    gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+    if (!gl) return false;
+    progs.depth = program(DEPTH_VS, DEPTH_FS); progs.lit = program(LIT_VS, LIT_FS); progs.sky = program(SKY_VS, SKY_FS);
+    progs.grass = program(GRASS_VS, GRASS_FS); progs.water = program(WATER_VS, WATER_FS); progs.ascii = program(ASCII_VS, ASCII_FS);
+    // cada sampler aponta para uma "unidade de textura" fixa: 0=cena 1=sombra 2=reflexo 3=letras
+    gl.useProgram(progs.lit.p); gl.uniform1i(progs.lit.u.uShadow, 1);
+    gl.useProgram(progs.grass.p); gl.uniform1i(progs.grass.u.uShadow, 1);
+    gl.useProgram(progs.water.p); gl.uniform1i(progs.water.u.uRefl, 2);
+    gl.useProgram(progs.ascii.p); gl.uniform1i(progs.ascii.u.uScene, 0); gl.uniform1i(progs.ascii.u.uAtlas, 3);
+
+    const me = R.meshes;
+    me.cube = mesh(Geo.cube()); me.cyl = mesh(Geo.cylinder(10)); me.cone = mesh(Geo.cone(10));
+    me.sph = mesh(Geo.sphere(8, 12)); me.torus = mesh(Geo.torus(0.4, 0.035, 28, 6));
+    skyMesh = mesh(Geo.sphere(12, 18));
+
+    // sombra: textura de profundidade
+    texShadow = texture(1, SHADOW, SHADOW, gl.DEPTH_COMPONENT24, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, gl.NEAREST);
+    fbShadow = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbShadow);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texShadow, 0);
+    gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("FBO de sombra incompleto");
+
+    makeAtlas();
+    R.setWorld(worldData);
+    R.resize();
+    R.ok = true;
+    return true;
   };
 
-  let cols = 15, rows = 11, lastLogVer = -1;
+  R.setWorld = function (w) {
+    world = w;
+    staticMesh = mesh(w.static); waterMesh = mesh(w.water);
+    ribbon = mesh({ pos: new Float32Array(600 * 3), nrm: new Float32Array(600 * 3), col: new Float32Array(600 * 3) }, true);
+    const bl = Geo.blade(); bladeCount = bl.idx.length;
+    grassVAO = gl.createVertexArray(); gl.bindVertexArray(grassVAO);
+    const bb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bb); gl.bufferData(gl.ARRAY_BUFFER, bl.pos, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    const eb = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, eb); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, bl.idx, gl.STATIC_DRAW);
+    grassBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, grassBuf); gl.bufferData(gl.ARRAY_BUFFER, w.grass, gl.STATIC_DRAW);
+    for (const loc of [3, 4]) { gl.enableVertexAttribArray(loc); gl.vertexAttribDivisor(loc, 1); }
+    gl.bindVertexArray(null);
+    chunks = w.chunks;
+  };
 
-  /** Mede o palco e decide o tamanho dos tiles e quantos cabem. */
-  function fit() {
-    const w = stage.clientWidth, h = stage.clientHeight;
-    const cell = Math.max(20, Math.min(36, Math.round(Math.min(w, 900) / 17)));
-    cols = Math.max(9, Math.floor(w / cell)); if (cols % 2 === 0) cols--;     // ímpar: herói no centro
-    rows = Math.max(7, Math.floor(h / cell)); if (rows % 2 === 0) rows--;
-    document.documentElement.style.setProperty("--cell", cell + "px");
+  /** Recalcula o tamanho da tela, das células de caractere e das texturas. */
+  R.resize = function () {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = window.innerWidth, cssH = window.innerHeight;
+    const mult = [0.65, 0.85, 1.2][R.detail] ?? 1;
+    const cw = Math.max(5, Math.min(12, Math.round((cssW / 130) * mult)));
+    const ch = Math.round(cw * 1.85);
+    cellPx = [Math.round(cw * dpr), Math.round(ch * dpr)];
+    cols = Math.ceil((cssW * dpr) / cellPx[0]); rows = Math.ceil((cssH * dpr) / cellPx[1]);
+    canvas.width = cols * cellPx[0]; canvas.height = rows * cellPx[1];
+    canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
+    W = cols * 2; H = rows * 2;                              // cena com 2x2 pixels por célula
+    if (fbScene) { gl.deleteFramebuffer(fbScene.fb); gl.deleteTexture(fbScene.tex); gl.deleteRenderbuffer(fbScene.rb); gl.deleteFramebuffer(fbRefl.fb); gl.deleteTexture(fbRefl.tex); gl.deleteRenderbuffer(fbRefl.rb); }
+    fbScene = colorFBO(0, W, H);
+    fbRefl = colorFBO(2, Math.max(64, W >> 1), Math.max(64, H >> 1));
+    R.cols = cols; R.rows = rows;
+  };
+
+  /** Depuração: devolve a imagem 3D "crua" (antes de virar caracteres) como PNG. */
+  R.dumpScene = function () {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
+    const px = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const c = cv.getContext("2d"), img = c.createImageData(W, H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const a = ((H - 1 - y) * W + x) * 4, b = (y * W + x) * 4;
+      img.data[b] = px[a]; img.data[b + 1] = px[a + 1]; img.data[b + 2] = px[a + 2]; img.data[b + 3] = 255;
+    }
+    c.putImageData(img, 0, 0); return cv.toDataURL("image/png");
+  };
+
+  // =============================== DESENHO ===============================
+  const IDENT = M.ident();
+  function setLit(vp, cam, clip) {
+    const u = progs.lit.u;
+    gl.useProgram(progs.lit.p);
+    gl.uniformMatrix4fv(u.uViewProj, false, vp); gl.uniformMatrix4fv(u.uLightVP, false, R._lightVP);
+    gl.uniform3f(u.uLightDir, L[0], L[1], L[2]); gl.uniform3f(u.uLightCol, 0.72, 0.82, 1.08);
+    gl.uniform3f(u.uAmbUp, 0.22, 0.31, 0.44); gl.uniform3f(u.uAmbDown, 0.07, 0.10, 0.14);
+    gl.uniform3f(u.uCamPos, cam.x, cam.y, cam.z); gl.uniform3f(u.uFogCol, 0.10, 0.20, 0.26);
+    gl.uniform3f(u.uRimCol, 0.4, 0.62, 1.0); gl.uniform1f(u.uRim, 0.55);
+    gl.uniform1f(u.uFogDen, 0.011); gl.uniform1f(u.uExposure, 1.7); gl.uniform1f(u.uClip, clip); gl.uniform1f(u.uFill, 0.06);
   }
 
-  const esc = (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c);
-
-  /** Monta uma célula. */
-  function span(glyph, fg, bg, opacity, cls) {
-    return `<span${cls ? ` class="${cls}"` : ""} style="color:${fg};background:${bg};opacity:${opacity}">${esc(glyph)}</span>`;
-  }
-
-  function draw(s, t) {
-    const { W, H, tiles } = s.world, p = s.player;
-
-    // Câmera: centraliza no herói, sem passar das bordas do mundo.
-    const camX = Math.max(0, Math.min(W - cols, p.x - (cols >> 1)));
-    const camY = Math.max(0, Math.min(H - rows, p.y - (rows >> 1)));
-    const phase = Math.floor(t / 450), flick = Math.floor(t / 130);
-    const R2 = s.R * s.R;
-
-    // Camada de entidades (itens < NPCs < monstros < herói < efeitos).
-    const over = new Map();
-    const put = (x, y, v) => over.set(y * W + x, v);
-    for (const it of s.items) put(it.x, it.y, it.kind === "chest" ? { g: "▣", fg: "#ffcf4a", cls: "e" } : { g: "!", fg: "#ff7ac8", cls: "e" });
-    for (const n of s.npcs) put(n.x, n.y, { g: n.g, fg: n.fg, cls: "e" });
-    for (const e of s.enemies) {
-      const d = Game.ENEMIES[e.type];
-      put(e.x, e.y, { g: d.g, fg: d.fg, cls: "e", flash: t - e.flash < 150 });
+  /** Desenha tudo que se mexe, usando "part" (que muda conforme a passada). */
+  function drawEntities(part, s, pass) {
+    const me = R.meshes, p = s.player, T = s.t;
+    if (!s.over || s.over !== "lose") Game.Models.drawPlayer(part, p, T);
+    for (const e of s.enemies) Game.Models.drawEnemy(part, e, T);
+    if (pass === "shadow") return;
+    for (const r of world.runes) part(me.cube, M.chain(M.T(r.x, r.y, r.z), M.Ry(r.yaw), M.S(r.w, r.h, 0.05)), [0.4, 0.95, 1.0], 1);
+    for (const o of s.orbs) {
+      const y = Game.World.height(o.x, o.z) + 0.7 + Math.sin(o.t * 3) * 0.15, k = 0.28 + Math.sin(o.t * 6) * 0.05;
+      part(me.sph, M.chain(M.T(o.x, y, o.z), M.S(k, k, k)), [0.35, 1.0, 0.5], 1);
     }
-    put(p.x, p.y, { g: "@", fg: "#fff7a8", cls: "pl", flash: t - p.flash < 150, red: t - p.flash < 150 });
-
-    // Efeitos flutuantes (números de dano): sobem e somem em ~0,8 s.
-    s.fx = s.fx.filter((f) => t - f.t < 800);
-    const fxCells = new Map();
-    for (const f of s.fx) {
-      const y = f.y - Math.floor((t - f.t) / 220);
-      const x0 = f.x - ((f.text.length - 1) >> 1);
-      for (let k = 0; k < f.text.length; k++) fxCells.set(y * W + x0 + k, { g: f.text[k], fg: f.color });
+    if (pass === "reflect") return;
+    for (const g of s.ghosts) {
+      const k = g.life / g.max;
+      Game.Models.drawPlayer(part, { x: g.x, y: g.y, z: g.z, yaw: g.yaw, walk: g.walk, speed01: 1, attackT: -1, dashT: 1, flash: 0, attackDir: 1, twist: 0 }, T, { color: [0.2 * k, 0.8 * k, 1.0 * k], em: 0.9 });
     }
-
-    const out = [];
-    for (let vy = 0; vy < rows; vy++) {
-      for (let vx = 0; vx < cols; vx++) {
-        const x = camX + vx, y = camY + vy;
-        if (x >= W || y >= H) { out.push(span(" ", "#000", "#05070a", 1)); continue; }
-        const i = y * W + x;
-        const f = fxCells.get(i);
-        if (f && s.vis[i]) { // número flutuante por cima de tudo
-          const td = TL[tiles[i]];
-          out.push(span(f.g, f.fg, td.bg[0], 1, "fxt")); continue;
-        }
-        if (!s.seen[i]) { out.push(span(" ", "#000", "#05070a", 1)); continue; }
-
-        const def = TL[tiles[i]], h = Game.hash2(x, y);
-        let gi = h % def.g.length;
-        if (def.anim === "water") gi = (h + phase) % def.g.length;        // água ondula
-        else if (def.anim === "fire") gi = (h + flick) % def.g.length;    // fogueira tremula
-        const fg = def.fg[(h >>> 3) % def.fg.length];
-        const bg = def.bg[(h >>> 6) % def.bg.length];
-
-        if (!s.vis[i]) { out.push(span(def.g[gi], fg, bg, 0.34)); continue; } // explorado, fora da visão
-
-        const dx = x - p.x, dy = y - p.y;
-        const light = Math.max(0.42, 1 - 0.58 * ((dx * dx + dy * dy) / R2));
-        const o = over.get(i);
-        if (o) {
-          const bg2 = o.red ? "#8a1f1f" : o.flash ? "#6b6b6b" : bg;
-          out.push(span(o.g, o.fg, bg2, 1, o.cls));
-        } else {
-          out.push(span(def.g[gi], fg, bg, light.toFixed(2)));
-        }
-      }
-      out.push("\n");
+    for (const q of s.particles) {
+      const k = Math.max(0, q.life / q.max), sz = q.size * (0.4 + 0.6 * k);
+      part(me.cube, M.chain(M.T(q.x, q.y, q.z), M.S(sz, sz, sz)), [q.color[0] * k, q.color[1] * k, q.color[2] * k], q.em);
     }
-    screen.innerHTML = out.join("");
-
-    // Efeitos de dano na tela
-    const hurt = t - s.hurtAt < 280;
-    stage.classList.toggle("hurt", hurt);
-    stage.classList.toggle("shake", hurt);
-
-    drawHud(s);
-  }
-
-  function drawHud(s) {
-    const p = s.player;
-    els.lv.textContent = p.lv;
-    els.gold.textContent = p.gold;
-    els.pot.textContent = p.potions;
-    els.hpbar.style.width = (100 * p.hp / p.maxHp) + "%";
-    els.hptxt.textContent = `Vida ${p.hp}/${p.maxHp}`;
-    els.xpbar.style.width = (100 * p.xp / Game.needXp(p.lv)) + "%";
-
-    if (s.quest === 0) els.quest.innerHTML = "Missão: fale com o <b>Ancião</b> (&amp;) na vila";
-    else {
-      const c = Game.compass(s);
-      els.quest.innerHTML = `Missão: derrote o <b>Dragão de Cinzas</b> — ${c.dir}, ${c.dist} passos`;
-    }
-
-    if (s.logVer !== lastLogVer) {          // só reconstrói o log quando mudou
-      lastLogVer = s.logVer;
-      els.log.innerHTML = s.log.slice(-4).map((l) => `<div class="${l.cls}">${l.text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</div>`).join("");
+    for (const f of world.fireflies) {
+      if (Math.abs(f.x - p.x) > 38 || Math.abs(f.z - p.z) > 38) continue;
+      const x = f.x + Math.sin(T * 0.7 + f.ph) * 1.2, z = f.z + Math.cos(T * 0.6 + f.ph * 1.3) * 1.2, y = f.y + Math.sin(T * 1.3 + f.ph) * 0.4;
+      const b = 0.5 + 0.5 * Math.sin(T * 2.4 + f.ph * 3), sz = 0.11 + 0.05 * b;
+      part(me.cube, M.chain(M.T(x, y, z), M.S(sz, sz, sz)), [0.9 * b + 0.2, 1.0 * b + 0.2, 0.5 * b], 1);
     }
   }
 
-  Game.Render = { fit, draw, size: () => ({ cols, rows }) };
+  /** Fita brilhante atrás da espada. */
+  function buildRibbon(s) {
+    const tr = s.trail, P = ribbon.bufs; let n = 0;
+    const pos = new Float32Array(600 * 3), nrm = new Float32Array(600 * 3), col = new Float32Array(600 * 3);
+    const put = (pt, c) => { pos.set(pt, n * 3); nrm[n * 3 + 1] = 1; col.set(c, n * 3); n++; };
+    for (let i = 0; i < tr.length - 1 && n < 590; i++) {
+      const a = tr[i], b = tr[i + 1];
+      if (b.at - a.at > 0.08) continue;
+      const ka = Math.pow(a.life / a.max, 1.4), kb = Math.pow(b.life / b.max, 1.4);
+      const ca = [0.7 * ka, 0.9 * ka, 1.0 * ka], cb = [0.7 * kb, 0.9 * kb, 1.0 * kb];
+      put(a.b, [ca[0] * 0.5, ca[1] * 0.5, ca[2] * 0.5]); put(a.t, ca); put(b.t, cb);
+      put(a.b, [ca[0] * 0.5, ca[1] * 0.5, ca[2] * 0.5]); put(b.t, cb); put(b.b, [cb[0] * 0.5, cb[1] * 0.5, cb[2] * 0.5]);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, P.pos); gl.bufferSubData(gl.ARRAY_BUFFER, 0, pos);
+    gl.bindBuffer(gl.ARRAY_BUFFER, P.nrm); gl.bufferSubData(gl.ARRAY_BUFFER, 0, nrm);
+    gl.bindBuffer(gl.ARRAY_BUFFER, P.col); gl.bufferSubData(gl.ARRAY_BUFFER, 0, col);
+    ribbon.count = n;
+  }
+
+  function drawGrass(vp, cam, s) {
+    const g = progs.grass, u = g.u, p = s.player;
+    gl.useProgram(g.p);
+    gl.uniformMatrix4fv(u.uViewProj, false, vp); gl.uniformMatrix4fv(u.uLightVP, false, R._lightVP);
+    gl.uniform1f(u.uTime, s.t); gl.uniform3f(u.uPlayer, p.x, p.y, p.z); gl.uniform3f(u.uCamPos, cam.x, cam.y, cam.z);
+    gl.uniform3f(u.uLightCol, 0.72, 0.82, 1.08); gl.uniform3f(u.uAmbUp, 0.30, 0.38, 0.52); gl.uniform3f(u.uFogCol, 0.10, 0.20, 0.26);
+    gl.uniform1f(u.uFogDen, 0.011); gl.uniform1f(u.uExposure, 1.7);
+    gl.bindVertexArray(grassVAO); gl.bindBuffer(gl.ARRAY_BUFFER, grassBuf);
+    for (const c of chunks) {
+      if (!c.count || Math.hypot(c.cx - cam.tx, c.cz - cam.tz) > 27) continue;
+      const off = c.start * 32;
+      gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, off); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, off + 16);
+      gl.drawElementsInstanced(gl.TRIANGLES, bladeCount, gl.UNSIGNED_INT, 0, c.count);
+    }
+  }
+
+  R.render = function (s) {
+    const cam = s.cam, p = s.player, me = R.meshes;
+    cam.aspect = canvas.width / canvas.height;
+    const view = M.lookAt([cam.x, cam.y, cam.z], [cam.tx, cam.ty, cam.tz], [0, 1, 0]);
+    const vp = M.mul(M.perspective(cam.fov, cam.aspect, 0.3, 500), view);
+    const vpR = M.mul(vp, M.S(1, -1, 1));
+
+    // ---- luz da lua (matriz que olha a cena de cima), "encaixada" em texels p/ a sombra não tremer ----
+    let tgt = [p.x, p.y, p.z];
+    let lv = M.lookAt([tgt[0] + L[0] * 70, tgt[1] + L[1] * 70, tgt[2] + L[2] * 70], tgt, [0, 1, 0]);
+    const texel = (2 * EXT) / SHADOW, rx = [lv[0], lv[4], lv[8]], ry = [lv[1], lv[5], lv[9]];
+    const dr = tgt[0] * rx[0] + tgt[1] * rx[1] + tgt[2] * rx[2], du = tgt[0] * ry[0] + tgt[1] * ry[1] + tgt[2] * ry[2];
+    const sr = Math.floor(dr / texel) * texel - dr, su = Math.floor(du / texel) * texel - du;
+    tgt = [tgt[0] + rx[0] * sr + ry[0] * su, tgt[1] + rx[1] * sr + ry[1] * su, tgt[2] + rx[2] * sr + ry[2] * su];
+    lv = M.lookAt([tgt[0] + L[0] * 70, tgt[1] + L[1] * 70, tgt[2] + L[2] * 70], tgt, [0, 1, 0]);
+    const lightVP = M.mul(M.ortho(-EXT, EXT, -EXT, EXT, 1, 150), lv);
+    R._lightVP = lightVP;
+
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+
+    // ---- 1) SOMBRA ----
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbShadow); gl.viewport(0, 0, SHADOW, SHADOW);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(progs.depth.p); const du2 = progs.depth.u;
+    gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
+    gl.uniformMatrix4fv(du2.uMVP, false, lightVP); draw(staticMesh);
+    drawEntities((m, mat, c, em) => { if (em >= 1) return; gl.uniformMatrix4fv(du2.uMVP, false, M.mul(lightVP, mat)); draw(m); }, s, "shadow");
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+
+    const litPart = (m, mat, c, em) => {
+      gl.uniformMatrix4fv(progs.lit.u.uModel, false, mat); gl.vertexAttrib4f(2, c[0], c[1], c[2], 1);
+      gl.uniform1f(progs.lit.u.uEmissive, em || 0); draw(m);
+    };
+    const litEnt = (m, mat, c, em) => { gl.uniform1f(progs.lit.u.uFill, 0.5); litPart(m, mat, c, em); };
+    const drawSky = (matrix) => {
+      gl.useProgram(progs.sky.p); const u = progs.sky.u;
+      gl.uniformMatrix4fv(u.uViewProj, false, matrix); gl.uniform3f(u.uCamPos, cam.x, cam.y, cam.z);
+      gl.uniform3f(u.uMoon, L[0], L[1], L[2]); gl.uniform1f(u.uExposure, 2.1);
+      gl.depthMask(false); draw(skyMesh); gl.depthMask(true);
+    };
+
+    // ---- 2) REFLEXO (mundo espelhado em y=0; descarta o que está abaixo da água) ----
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbRefl.fb); gl.viewport(0, 0, Math.max(64, W >> 1), Math.max(64, H >> 1));
+    gl.clearColor(0.03, 0.07, 0.1, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    drawSky(vpR);
+    setLit(vpR, cam, -0.01); gl.uniform1f(progs.lit.u.uEmissive, 0);
+    gl.uniformMatrix4fv(progs.lit.u.uModel, false, IDENT); draw(staticMesh);
+    drawEntities(litEnt, s, "reflect");
+
+    // ---- 3) CENA ----
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb); gl.viewport(0, 0, W, H);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    drawSky(vp);
+    setLit(vp, cam, -1e9);
+    gl.uniform1f(progs.lit.u.uEmissive, 0);
+    gl.uniformMatrix4fv(progs.lit.u.uModel, false, IDENT); draw(staticMesh);
+    drawGrass(vp, cam, s);
+    gl.useProgram(progs.lit.p);
+    drawEntities(litEnt, s, "main");
+    if (s.trail.length > 1) {                                 // rastro da espada
+      buildRibbon(s);
+      gl.uniformMatrix4fv(progs.lit.u.uModel, false, IDENT); gl.uniform1f(progs.lit.u.uEmissive, 1); draw(ribbon);
+    }
+    // água por último (opaca, com o reflexo que acabamos de renderizar)
+    const wu = progs.water.u; gl.useProgram(progs.water.p);
+    gl.uniformMatrix4fv(wu.uViewProj, false, vp); gl.uniform2f(wu.uRes, W, H);
+    gl.uniform1f(wu.uTime, s.t); gl.uniform1f(wu.uExposure, 1.7);
+    gl.uniform3f(wu.uCamPos, cam.x, cam.y, cam.z); gl.uniform3f(wu.uLightDir, L[0], L[1], L[2]);
+    draw(waterMesh);
+
+    // ---- 4) ASCII: transforma a imagem pequena em caracteres na tela ----
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.DEPTH_TEST);
+    const a = progs.ascii; gl.useProgram(a.p);
+    gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]);
+    gl.uniform1f(a.u.uRamp, RAMP.length); gl.uniform1f(a.u.uTotal, RAMP.length + EDGE.length);
+    gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.DEPTH_TEST);
+  };
 })();
