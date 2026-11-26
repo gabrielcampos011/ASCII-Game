@@ -23,7 +23,7 @@ window.Game = window.Game || {};
   const C = {
     skin: [0.93, 0.78, 0.64], hair: [0.13, 0.10, 0.20], tunic: [0.14, 0.24, 0.50], armor: [0.72, 0.79, 0.92],
     pants: [0.15, 0.18, 0.30], boot: [0.30, 0.20, 0.14], leather: [0.34, 0.23, 0.15], glove: [0.26, 0.19, 0.14],
-    cloak: [0.14, 0.46, 0.94], cloak2: [0.09, 0.32, 0.72], belt: [0.35, 0.95, 1.0], halo: [1, 1, 1],
+    cloak: [0.17, 0.36, 0.74], cloak2: [0.11, 0.25, 0.55], belt: [0.35, 0.95, 1.0], halo: [1, 1, 1],
     blade: [0.88, 0.96, 1.0], gold: [0.85, 0.65, 0.22],
   };
 
@@ -113,7 +113,7 @@ window.Game = window.Game || {};
     const widths = [0.34, 0.39, 0.44, 0.5], SEG = 0.31;
     for (let i = 0; i < (lod ? 2 : 4); i++) {
       const c2 = i % 2 ? C.cloak2 : C.cloak;
-      P(R.cube, M.chain(cf, M.T(0, -SEG / 2, 0), M.S(widths[i], SEG + 0.015, 0.04)), c2);
+      P(R.cyl, M.chain(cf, M.T(0, -SEG - 0.01, 0), M.S(widths[i], SEG + 0.02, 0.1)), c2);   // elíptico: o sombreado curva como tecido
       cf = M.chain(cf, M.T(0, -SEG, 0), M.Rx(ca * 0.3 + Math.sin(time * 2.4 + i * 0.9 + f.ph * 0.5) * 0.07 * (0.4 + sp)));
     }
     P(R.sph, M.chain(U, M.T(0, 0.585, -0.035), M.S(0.34, 0.12, 0.27)), C.cloak);              // gola

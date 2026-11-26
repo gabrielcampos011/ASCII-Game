@@ -80,6 +80,11 @@
   const cycleZoom = () => { const R = Game.Renderer; R.setZoom(R.getZoom() >= R.maxZoom() ? 1 : R.getZoom() + 1); };
   $("zoomBtn").addEventListener("click", cycleZoom);
 
+  // ---------- VISUAL: Cinema (imagem nítida, letras só como textura) / Misto / ASCII clássico ----------
+  const labelStyle = () => { $("styleBtn").textContent = "Visual: " + ["Cinema", "Misto", "ASCII clássico"][Game.Renderer.style]; };
+  labelStyle();
+  $("styleBtn").addEventListener("click", () => { Game.Renderer.setStyle(Game.Renderer.style + 1); labelStyle(); if (state) state.dirty = true; });
+
   // ---------- SOM ----------
   const A = Game.Audio, labelSound = () => { $("soundBtn").textContent = "Som: " + (A.muted ? "desligado" : "ligado"); };
   labelSound();
@@ -157,6 +162,10 @@
     while (acc >= DT) { step(); acc -= DT; }
     // sons: o jogo anota os eventos em state.sfx; aqui eles viram áudio (e o "ouvido" acompanha a câmera)
     A.listen(state.player.x, state.player.z, state.cam.yaw);
+    if (mode === "play") {                                          // tensão da trilha: inimigo mais perto = mais tenso
+      let dmin = 99; for (const e of state.enemies) if (!e.dying) dmin = Math.min(dmin, Math.hypot(e.x - state.player.x, e.z - state.player.z));
+      A.setIntensity(1 - dmin / 16);
+    } else A.setIntensity(0);
     for (const ev of state.sfx) A.play(ev);
     state.sfx.length = 0;
     if (mode === "play" && state.player.hp > 0 && state.player.hp / state.player.maxHp < 0.3 && now - lastHeart > 900) { lastHeart = now; A.play({ n: "heart" }); }
