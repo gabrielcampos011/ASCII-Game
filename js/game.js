@@ -37,6 +37,9 @@ window.Game = window.Game || {};
     if (rad > 66) { pos.x *= 66 / rad; pos.z *= 66 / rad; }
   }
 
+  /** Anota um som para o áudio tocar (com a posição, para soar mais alto/baixo e de que lado). */
+  function sfx(s, n, x, z, o) { s.sfx.push(Object.assign({ n, x, z }, o)); }
+
   function burst(s, x, y, z, n, o) {
     for (let i = 0; i < n && s.particles.length < 260; i++) {
       const a = rand(0, TAU), up = rand(o.up0 ?? 0.2, o.up1 ?? 1), sp = rand(0.3, 1) * (o.speed ?? 4);
@@ -72,7 +75,7 @@ window.Game = window.Game || {};
         dashT: 0, dashCd: 0, dashX: 0, dashZ: 1, ghostT: 0,
         attackT: -1, attackDir: 1, attackBuf: 0, twist: 0, combo: 0,
       },
-      enemies: [], particles: [], orbs: [], ghosts: [], trail: [], decals: [],
+      enemies: [], particles: [], orbs: [], ghosts: [], trail: [], decals: [], sfx: [],
       cam: { yaw: 1.96, pitch: 0.32, dist: 5.0, x: 0, y: 3, z: -6, tx: 0, ty: 1.5, tz: 0, fov: 1.08, shake: 0, aspect: 1.6 },
     };
     s.player.y = Game.World.height(0, 0);
@@ -96,7 +99,7 @@ window.Game = window.Game || {};
     }
   }
   function startWave(s) {
-    s.wave++;
+    s.wave++; sfx(s, "horn");
     const n = 3 + s.wave * 2, ogres = Math.max(0, s.wave - 2) + (s.wave === WAVES ? 1 : 0);
     for (let i = 0; i < n; i++) spawnEnemy(s, "goblin");
     for (let i = 0; i < ogres; i++) spawnEnemy(s, "ogre");
@@ -107,18 +110,18 @@ window.Game = window.Game || {};
   function hurtPlayer(s, dmg, fx, fz) {
     const p = s.player;
     if (p.invuln > 0 || p.dashT > 0 || s.over) return false;
-    p.hp -= dmg; p.invuln = 0.6; p.flash = 0.25;
+    p.hp -= dmg; p.invuln = 0.6; p.flash = 0.25; sfx(s, "hurt", p.x, p.z);
     const d = Math.hypot(p.x - fx, p.z - fz) || 1;
     p.vx = ((p.x - fx) / d) * 8; p.vz = ((p.z - fz) / d) * 8;
     s.cam.shake = 0.5; s.hitstop = 0.07;
     burst(s, p.x, p.y + 1.2, p.z, 14, { color: [1, 0.3, 0.3], speed: 5, life: 0.5 });
-    if (p.hp <= 0) { p.hp = 0; s.over = "lose"; s.overT = 1.2; }
+    if (p.hp <= 0) { p.hp = 0; s.over = "lose"; s.overT = 1.2; sfx(s, "lose"); }
     return true;
   }
 
   function damageEnemy(s, e, dmg, crit) {
     const p = s.player;
-    e.hp -= dmg; e.flash = 0.14;
+    e.hp -= dmg; e.flash = 0.14; sfx(s, "hit", e.x, e.z, { crit });
     const d = Math.hypot(e.x - p.x, e.z - p.z) || 1, kb = e.type === "ogre" ? 2.5 : 7;
     e.kx = ((e.x - p.x) / d) * kb; e.kz = ((e.z - p.z) / d) * kb;
     if (e.state === "windup" && e.type === "goblin") { e.state = "recover"; e.st = 0; }      // golpe interrompe goblin
@@ -126,7 +129,7 @@ window.Game = window.Game || {};
     burst(s, e.x, e.y + 0.9, e.z, crit ? 10 : 5, { color: crit ? [1, 0.9, 0.4] : [1, 1, 1], speed: 6, life: 0.3 });   // faíscas
     const sc = ENEMY[e.type].scale;
     blood(s, e.x, e.y + 0.95 * sc, e.z, e.x - p.x, e.z - p.z, crit ? 34 : 20, e.type === "ogre" ? 1.2 : 1);
-    if (e.hp <= 0 && !e.dying) { e.dying = true; e.dieT = 0; s.kills++; }
+    if (e.hp <= 0 && !e.dying) { e.dying = true; e.dieT = 0; s.kills++; sfx(s, "kill", e.x, e.z, { big: e.type === "ogre" }); }
   }
 
   // ---------- Jogador ----------
@@ -146,14 +149,14 @@ window.Game = window.Game || {};
     if (inp.dash && p.dashCd <= 0 && p.dashT <= 0) {
       const dx = mag > 0.15 ? mx / Math.max(mag, 1) : Math.sin(p.yaw), dz = mag > 0.15 ? mz / Math.max(mag, 1) : Math.cos(p.yaw);
       const l = Math.hypot(dx, dz) || 1;
-      p.dashX = dx / l; p.dashZ = dz / l; p.dashT = 0.2; p.dashCd = 0.85; p.invuln = Math.max(p.invuln, 0.28);
+      sfx(s, "dash", p.x, p.z); p.dashX = dx / l; p.dashZ = dz / l; p.dashT = 0.2; p.dashCd = 0.85; p.invuln = Math.max(p.invuln, 0.28);
       p.attackT = -1; p.yaw = Math.atan2(p.dashX, p.dashZ);
       burst(s, p.x, p.y + 0.1, p.z, 16, { color: [0.6, 0.9, 1], speed: 3.5, life: 0.45, size: 0.14, up0: 0.1, up1: 0.5 });
     }
     // Ataque (com um pequeno "buffer": o toque vale por 0,25s)
     if (inp.attack) p.attackBuf = 0.25;
     if (p.attackBuf > 0 && p.attackT < 0 && p.dashT <= 0) {
-      p.attackT = 0; p.attackDir = -p.attackDir; p.attackBuf = 0; p.hit = new Set(); p.combo++;
+      p.attackT = 0; p.attackDir = -p.attackDir; p.attackBuf = 0; p.hit = new Set(); p.combo++; sfx(s, "swing", p.x, p.z);
       // auto-mira: vira para o inimigo mais próximo à frente
       let best = null, bd = 6.5;
       for (const e of s.enemies) {
@@ -205,6 +208,8 @@ window.Game = window.Game || {};
     const spd = Math.hypot(p.vx, p.vz);
     p.speed01 = clamp(spd / 6.4, 0, 1.4);
     p.walk += dt * (4 + spd * 1.15);
+    const stepIdx = Math.floor(p.walk / Math.PI);                      // a cada meia volta do ciclo de andar = um pé no chão
+    if (stepIdx !== p.stepIdx) { p.stepIdx = stepIdx; if (spd > 1.6 && p.dashT <= 0 && p.attackT < 0) sfx(s, Game.World.height(p.x, p.z) < -0.05 ? "splash" : "step", p.x, p.z); }
 
     // Mover (sem entrar em água funda) e colidir
     const nx = p.x + p.vx * dt, nz = p.z + p.vz * dt, pos = { x: p.x, z: p.z };
@@ -257,11 +262,11 @@ window.Game = window.Game || {};
           const l = Math.hypot(mx, mz) || 1;
           e.x += (mx / l) * def.speed * dt; e.z += (mz / l) * def.speed * dt; e.walk += dt * def.speed * 1.6;
         }
-        if (dist < def.range && e.atkCd <= 0) { e.state = "windup"; e.st = 0; }
+        if (dist < def.range && e.atkCd <= 0) { e.state = "windup"; e.st = 0; sfx(s, "growl", e.x, e.z, { big: e.type === "ogre" }); }
       } else if (e.state === "windup") {
         e.st += dt; e.yaw += clamp(angDiff(e.yaw, want), -2.5 * dt, 2.5 * dt);
         if (e.st >= def.windup) {
-          e.state = "recover"; e.st = 0;
+          e.state = "recover"; e.st = 0; sfx(s, "strike", e.x, e.z, { big: e.type === "ogre" });
           const reach = def.range + (e.type === "ogre" ? 0.4 : 0.5);
           if (Math.hypot(p.x - e.x, p.z - e.z) < reach) hurtPlayer(s, def.dmg, e.x, e.z);
           if (e.type === "ogre") {
@@ -307,7 +312,7 @@ window.Game = window.Game || {};
     for (let i = s.orbs.length - 1; i >= 0; i--) {
       const o = s.orbs[i]; o.t += dt;
       if (Math.hypot(o.x - p.x, o.z - p.z) < 1.3) {
-        p.hp = Math.min(p.maxHp, p.hp + 15);
+        p.hp = Math.min(p.maxHp, p.hp + 15); sfx(s, "orb", o.x, o.z);
         burst(s, o.x, Game.World.height(o.x, o.z) + 0.6, o.z, 14, { color: [0.4, 1, 0.5], speed: 3, life: 0.5 });
         s.orbs.splice(i, 1);
       }
@@ -344,7 +349,7 @@ window.Game = window.Game || {};
       if (!alive && s.wave > 0) { if (s.waveTimer <= 0) s.waveTimer = 3.2; }
       if (!alive) {
         s.waveTimer -= dt;
-        if (s.waveTimer <= 0) { if (s.wave >= WAVES) { s.over = "win"; s.overT = 1.2; } else startWave(s); }
+        if (s.waveTimer <= 0) { if (s.wave >= WAVES) { s.over = "win"; s.overT = 1.2; sfx(s, "win"); } else startWave(s); }
       }
     } else { s.overT -= dt; updateEnemies(s, dt * 0.2); }
     updateFx(s, dt);

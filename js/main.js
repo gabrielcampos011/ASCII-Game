@@ -18,7 +18,7 @@
   const $ = (id) => document.getElementById(id);
   const IDLE = { mx: 0, my: 0, camDX: 0, camDY: 0, rot: -0.12, attack: false, dash: false, restart: false, any: false };
 
-  let state, mode = "title", last = 0, acc = 0, worldData, hudKey = "", pausedAt = 0, helpFrom = "title";
+  let lastHeart = 0, state, mode = "title", last = 0, acc = 0, worldData, hudKey = "", pausedAt = 0, helpFrom = "title";
   const labelDetail = () => { $("detail").textContent = "Caracteres: " + ["pequenos", "médios", "grandes"][Game.Renderer.detail]; };
 
   function fail(msg) { $("nogl").hidden = false; $("nogl").querySelector("p").textContent = msg; }
@@ -28,7 +28,7 @@
   function startGame() {
     $("hud").hidden = false;
     state = newState(); mode = "play"; hudKey = "";
-    show(null); drawHud(); setPlaying(true);
+    show(null); drawHud(); setPlaying(true); A.resume();
   }
   /** Mostra só uma tela por cima do jogo (ou nenhuma, com null). */
   function show(id) { for (const o of ["title", "pause", "help", "end"]) $(o).hidden = o !== id; }
@@ -41,11 +41,11 @@
   }
   function pause() {
     if (mode !== "play" || state.over) return;
-    mode = "pause"; pausedAt = performance.now(); setPlaying(false); show("pause");
+    mode = "pause"; pausedAt = performance.now(); setPlaying(false); show("pause"); A.suspend();
   }
   function resume() {
     if (mode !== "pause") return;
-    mode = "play"; show(null); setPlaying(true); lockMouse();
+    mode = "play"; show(null); setPlaying(true); lockMouse(); A.resume();
   }
   /** No computador, volta a travar o cursor (o navegador pode recusar logo após um Esc). */
   function lockMouse() {
@@ -76,8 +76,16 @@
   });
   $("pauseBtn").addEventListener("click", pause);
   // ZOOM: 1x -> 2x -> 3x -> 4x -> 1x. Também muda com o gesto de pinça (veja input.js).
-  Game.Renderer.onZoom = (z) => { $("zoomVal").textContent = z + "×"; };
-  $("zoomBtn").addEventListener("click", () => { const R = Game.Renderer; R.setZoom(R.getZoom() >= R.maxZoom() ? 1 : R.getZoom() + 1); });
+  Game.Renderer.onZoom = (z) => { $("zoomVal").textContent = z + "×"; $("zoomKey").textContent = z + "×"; };
+  const cycleZoom = () => { const R = Game.Renderer; R.setZoom(R.getZoom() >= R.maxZoom() ? 1 : R.getZoom() + 1); };
+  $("zoomBtn").addEventListener("click", cycleZoom);
+
+  // ---------- SOM ----------
+  const A = Game.Audio, labelSound = () => { $("soundBtn").textContent = "Som: " + (A.muted ? "desligado" : "ligado"); };
+  labelSound();
+  $("soundBtn").addEventListener("click", () => { A.setMuted(!A.muted); labelSound(); });
+  // navegadores só liberam áudio depois de um toque/tecla do jogador, então "destravamos" em qualquer um
+  ["pointerup", "touchend", "click", "keydown"].forEach((t) => window.addEventListener(t, A.unlock, { passive: true }));
   $("resumeBtn").addEventListener("click", resume);
   $("restartBtn").addEventListener("click", startGame);
   $("quitBtn").addEventListener("click", toMenu);
@@ -85,6 +93,14 @@
   $("helpBtn").addEventListener("click", openHelp);
   $("controlsBtn").addEventListener("click", openHelp);
   $("backBtn").addEventListener("click", closeHelp);
+
+  // Z = zoom nas letras, M = som (no computador)
+  window.addEventListener("keydown", (e) => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "z" && mode === "play") cycleZoom();
+    else if (k === "m") { A.setMuted(!A.muted); labelSound(); }
+  });
 
   // Esc / P pausam e continuam
   window.addEventListener("keydown", (e) => {
@@ -139,6 +155,11 @@
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now; acc += dt;
     while (acc >= DT) { step(); acc -= DT; }
+    // sons: o jogo anota os eventos em state.sfx; aqui eles viram áudio (e o "ouvido" acompanha a câmera)
+    A.listen(state.player.x, state.player.z, state.cam.yaw);
+    for (const ev of state.sfx) A.play(ev);
+    state.sfx.length = 0;
+    if (mode === "play" && state.player.hp > 0 && state.player.hp / state.player.maxHp < 0.3 && now - lastHeart > 900) { lastHeart = now; A.play({ n: "heart" }); }
     Game.Renderer.render(state);
     if (mode === "play" || mode === "over") drawHud();
     requestAnimationFrame(frame);
