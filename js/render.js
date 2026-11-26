@@ -21,12 +21,14 @@ window.Game = window.Game || {};
   const M = Game.M, Geo = Game.Geo;
   const HDR = "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n";
   const R = (Game.Renderer = { meshes: {}, ok: false, detail: 0 });
-  const RAMP = " .:-=+*#%@", EDGE = "-/|\\";
+  const SX = 4, SY = 8;                       // sub-pixels da cena por célula (4 de largura x 8 de altura)
+  const GLYPHS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("");   // ASCII imprimível
+  const NG = GLYPHS.length;
   const SHADOW = 1024, EXT = 34;
   const L = (() => { const v = [0.62, 0.5, -0.25], l = Math.hypot(...v); return v.map((x) => x / l); })();
 
   let gl, canvas, world, W = 2, H = 2, cols = 10, rows = 10, cellPx = [8, 14];
-  let progs = {}, U = {}, fbShadow, texShadow, fbScene, texScene, fbRefl, texRefl, texAtlas;
+  let progs = {}, U = {}, fbShadow, texShadow, fbScene, texScene, fbRefl, texRefl, texAtlas, texPat, fbCell, rampIdx, rampCov;
   let staticMesh, waterMesh, skyMesh, ribbon, grassBuf, grassVAO, bladeCount, chunks;
 
   // =============================== SHADERS ===============================
@@ -118,6 +120,8 @@ window.Game = window.Game || {};
       float ph = uTime * 1.6 + aI0.x * 0.31 + aI0.z * 0.23 + aI1.w * 0.2;
       float wind = (sin(ph) + 0.5 * sin(ph * 2.3 + 1.7)) * 0.17 * y * y * hgt;
       wp.x += wind; wp.z += wind * 0.6;
+      float la = aI1.w * 3.1, lean = (fract(aI1.w * 7.3) - 0.5) * 0.9;     // cada folha pende para um lado
+      wp.xz += vec2(cos(la), sin(la)) * lean * y * y * hgt;
       // o herói amassa a grama
       vec2 dv = aI0.xz - uPlayer.xz; float dist = length(dv);
       float push = smoothstep(1.8, 0.0, dist);
@@ -171,36 +175,74 @@ window.Game = window.Game || {};
     }`;
 
   const ASCII_VS = HDR + `void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
-  const ASCII_FS = HDR + `
-    uniform sampler2D uScene, uAtlas; uniform vec2 uGrid, uCell; uniform float uRamp, uTotal; out vec4 o;
+  // PASSO A (uma execução por CÉLULA): compara a "forma" dos 4x8 sub-pixels da cena com a
+  // forma de cada letra ASCII e escolhe a mais parecida (menor erro quadrático).
+  const MATCH_FS = HDR + `
+    uniform sampler2D uScene, uPat; uniform int uN, uRampN; uniform float uRampCov[16]; uniform int uRampIdx[16];
+    layout(location=0) out vec4 o0; layout(location=1) out vec4 o1;
     float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
-    float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
     void main(){
-      vec2 px = gl_FragCoord.xy, cell = floor(px / uCell), loc = fract(px / uCell);
-      vec2 uv = (cell + 0.5) / uGrid, d = 1.0 / uGrid;
-      vec4 c = texture(uScene, uv);
-      vec4 nl = texture(uScene, uv - vec2(d.x, 0.0)), nr = texture(uScene, uv + vec2(d.x, 0.0));
-      vec4 nd = texture(uScene, uv - vec2(0.0, d.y)), nu = texture(uScene, uv + vec2(0.0, d.y));
-      float Lm = lum(c.rgb);
-      float gx = lum(nr.rgb) - lum(nl.rgb), gy = lum(nu.rgb) - lum(nd.rgb);
-      float mag = length(vec2(gx, gy));
-      float idx;
-      if (mag > 0.24 && Lm > 0.06) {            // borda: escolhe | - / \\ pela direção
-        float a = mod(atan(gy, gx) + 1.5708, 3.14159265);
-        float q = floor(a / 0.785398 + 0.5); if (q >= 4.0) q = 0.0;
-        idx = uRamp + q;
-      } else {                                  // área: quanto mais claro, mais "cheio" o caractere
-        float v = pow(clamp(Lm * 1.35, 0.0, 1.0), 1.25);
-        idx = clamp(floor(v * (uRamp - 1.0) + 0.5 + (hash(cell) - 0.5) * 0.35), 0.0, uRamp - 1.0);
-        if (Lm < 0.03) idx = 0.0;
+      ivec2 cell = ivec2(gl_FragCoord.xy), base = cell * ivec2(${SX}, ${SY});
+      vec4 Lr[${SY}]; vec3 csum = vec3(0.0); float wsum = 0.0, lo = 1e9, hi = 0.0, sum = 0.0, em = 0.0;
+      for (int j = 0; j < ${SY}; j++) {
+        vec4 row;
+        for (int i = 0; i < ${SX}; i++) {
+          vec4 sp = texelFetch(uScene, base + ivec2(i, j), 0);
+          float l = lum(sp.rgb);
+          row[i] = l; lo = min(lo, l); hi = max(hi, l); sum += l; csum += sp.rgb * l; wsum += l; em = max(em, sp.a);
+        }
+        Lr[j] = row;
       }
-      float ga = texture(uAtlas, vec2((idx + clamp(loc.x, 0.04, 0.96)) / uTotal, loc.y)).r;
-      vec3 hue = mix(vec3(1.0), c.rgb / max(max(c.r, max(c.g, c.b)), 0.02), 0.72);
-      float br = 0.34 + 1.05 * pow(clamp(Lm, 0.0, 1.0), 0.55);
-      vec3 ink = hue * br * (1.0 + c.a * 0.7);
-      vec3 glow = (nl.rgb * nl.a + nr.rgb * nr.a + nd.rgb * nd.a + nu.rgb * nu.a) * 0.10 + c.rgb * c.a * 0.15;
-      vec3 bg = c.rgb * 0.07 + glow * 0.5;
-      vec3 col = mix(bg, ink, ga);
+      float m = sum / float(${SX * SY});
+      vec3 avg = csum / max(wsum, 1e-4);
+      float contrast = (hi - lo) / max(hi, 0.02);
+      float w = smoothstep(0.30, 0.70, contrast) * step(0.04, hi);     // 0 = área lisa (densidade), 1 = contorno (forma)
+      vec4 T[${SY}];
+      float floorCov = clamp(lo * 0.9, 0.0, 1.0) * 0.55;              // base uniforme (densidade do "fundo" da célula)
+      float amp = clamp((hi - lo) * 2.4, 0.0, 0.9);                    // contraste ABSOLUTO: pouco contraste = traço fraco
+      for (int j = 0; j < ${SY}; j++) {
+        vec4 td = clamp(Lr[j] * 0.9, 0.0, 1.0) * 0.55;                 // modo densidade
+        vec4 ts = floorCov + (Lr[j] - lo) / max(hi - lo, 1e-3) * amp;  // modo forma (só o desenho do contorno)
+        T[j] = mix(td, ts, w);
+      }
+      float best = 1e9; int bi = 0;
+      for (int g = 0; g < uN; g++) {
+        float e = 0.0;
+        for (int j = 0; j < ${SY}; j++) { vec4 d = T[j] - texelFetch(uPat, ivec2(g, j), 0); e += dot(d, d); }
+        if (e < best) { best = e; bi = g; }
+      }
+      // áreas lisas: usa uma rampa de símbolos de "textura" (. : - = + * # @), nunca | ou _
+      float tmean = 0.0;
+      for (int j = 0; j < ${SY}; j++) tmean += dot(clamp(Lr[j] * 0.9, 0.0, 1.0) * 0.55, vec4(1.0));
+      tmean /= float(${SX * SY});
+      float jit = (fract(sin(dot(vec2(cell), vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.05;
+      float bd = 1e9; int di = 0;
+      for (int r = 0; r < uRampN; r++) { float d = abs(uRampCov[r] - (tmean + jit)); if (d < bd) { bd = d; di = uRampIdx[r]; } }
+      if (w < 0.5) bi = di;
+      if (hi < 0.03) bi = 0;                                           // escuro: espaço vazio
+      vec3 hue = mix(vec3(1.0), avg / max(max(avg.r, max(avg.g, avg.b)), 0.02), 0.72);
+      float B = mix(m, hi, w);
+      vec3 ink = hue * (0.16 + 1.3 * pow(clamp(B, 0.0, 1.0), 0.85)) * (1.0 + em * 0.7);
+      // brilho (bloom) vindo de células vizinhas emissivas
+      vec3 glow = vec3(0.0);
+      ivec2 ctr = base + ivec2(${SX / 2}, ${SY / 2});
+      vec4 a1 = texelFetch(uScene, ctr + ivec2(${SX}, 0), 0), a2 = texelFetch(uScene, ctr - ivec2(${SX}, 0), 0);
+      vec4 a3 = texelFetch(uScene, ctr + ivec2(0, ${SY}), 0), a4 = texelFetch(uScene, ctr - ivec2(0, ${SY}), 0);
+      glow = a1.rgb * a1.a + a2.rgb * a2.a + a3.rgb * a3.a + a4.rgb * a4.a;
+      vec3 bg = avg * 0.05 * step(0.03, hi) + glow * 0.018;
+      o0 = vec4(bg, float(bi) / 255.0);
+      o1 = vec4(ink, em);
+    }`;
+  // PASSO B (uma execução por PIXEL da tela): desenha a letra escolhida em alta resolução.
+  const SHOW_FS = HDR + `
+    uniform sampler2D uC0, uC1, uAtlas; uniform vec2 uGrid, uCell; uniform float uN; out vec4 o;
+    void main(){
+      vec2 px = gl_FragCoord.xy, loc = fract(px / uCell);
+      ivec2 cell = ivec2(floor(px / uCell));
+      vec4 a = texelFetch(uC0, cell, 0), b = texelFetch(uC1, cell, 0);
+      float idx = floor(a.a * 255.0 + 0.5);
+      float ga = texture(uAtlas, vec2((idx + clamp(loc.x, 0.02, 0.98)) / uN, loc.y)).r;
+      vec3 col = mix(a.rgb, b.rgb, ga);
       vec2 q2 = px / (uGrid * uCell) - 0.5;
       col *= 1.0 - dot(q2, q2) * 0.8;
       o = vec4(col, 1.0);
@@ -259,14 +301,36 @@ window.Game = window.Game || {};
     return { fb, tex, rb };
   }
 
+  /** Cria (a) o atlas de letras para desenhar e (b) a textura de "formas" para comparar. */
   function makeAtlas() {
-    const chars = RAMP + EDGE, sw = 24, sh = 44, cv = document.createElement("canvas");
-    cv.width = sw * chars.length; cv.height = sh;
-    const c = cv.getContext("2d");
+    const sw = 24, sh = 48, cv = document.createElement("canvas");
+    cv.width = sw * NG; cv.height = sh;
+    const c = cv.getContext("2d", { willReadFrequently: true });
     c.fillStyle = "#000"; c.fillRect(0, 0, cv.width, cv.height);
     c.fillStyle = "#fff"; c.textAlign = "center"; c.textBaseline = "middle";
-    c.font = `bold 34px "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace`;
-    for (let i = 0; i < chars.length; i++) c.fillText(chars[i], i * sw + sw / 2, sh * 0.54);
+    c.font = `bold 38px "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace`;
+    for (let i = 0; i < NG; i++) c.fillText(GLYPHS[i], i * sw + sw / 2, sh * 0.54);
+
+    // (b) cobertura de cada letra em SX x SY sub-células (média do brilho do desenho)
+    const img = c.getImageData(0, 0, cv.width, cv.height).data, pat = new Uint8Array(NG * SY * 4);
+    const bw = sw / SX, bh = sh / SY;
+    for (let g = 0; g < NG; g++) for (let r = 0; r < SY; r++) for (let q = 0; q < SX; q++) {
+      let sum = 0;
+      for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) sum += img[((r * bh + y) * cv.width + g * sw + q * bw + x) * 4];
+      const j = SY - 1 - r;                                  // linha 0 = parte de baixo (como o WebGL)
+      pat[(j * NG + g) * 4 + q] = Math.round(sum / (bw * bh));
+    }
+    const RAMP_CH = " .`,:;-~=+*xX#%@";                       // letras para áreas lisas
+    rampIdx = []; rampCov = [];
+    for (const ch of RAMP_CH) {
+      const g = GLYPHS.indexOf(ch); let sum = 0;
+      for (let j = 0; j < SY; j++) for (let q = 0; q < SX; q++) sum += pat[(j * NG + g) * 4 + q] / 255;
+      rampIdx.push(g); rampCov.push(sum / (SX * SY));
+    }
+    texPat = texture(4, NG, SY, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NG, SY, gl.RGBA, gl.UNSIGNED_BYTE, pat);
+
+    // (a) atlas visual
     gl.activeTexture(gl.TEXTURE3);
     texAtlas = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texAtlas);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -276,18 +340,20 @@ window.Game = window.Game || {};
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
+
   // =============================== INICIALIZAÇÃO ===============================
   R.init = function (cv, worldData) {
     canvas = cv;
     gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
     if (!gl) return false;
     progs.depth = program(DEPTH_VS, DEPTH_FS); progs.lit = program(LIT_VS, LIT_FS); progs.sky = program(SKY_VS, SKY_FS);
-    progs.grass = program(GRASS_VS, GRASS_FS); progs.water = program(WATER_VS, WATER_FS); progs.ascii = program(ASCII_VS, ASCII_FS);
+    progs.grass = program(GRASS_VS, GRASS_FS); progs.water = program(WATER_VS, WATER_FS); progs.ascii = program(ASCII_VS, MATCH_FS); progs.show = program(ASCII_VS, SHOW_FS);
     // cada sampler aponta para uma "unidade de textura" fixa: 0=cena 1=sombra 2=reflexo 3=letras
     gl.useProgram(progs.lit.p); gl.uniform1i(progs.lit.u.uShadow, 1);
     gl.useProgram(progs.grass.p); gl.uniform1i(progs.grass.u.uShadow, 1);
     gl.useProgram(progs.water.p); gl.uniform1i(progs.water.u.uRefl, 2);
-    gl.useProgram(progs.ascii.p); gl.uniform1i(progs.ascii.u.uScene, 0); gl.uniform1i(progs.ascii.u.uAtlas, 3);
+    gl.useProgram(progs.ascii.p); gl.uniform1i(progs.ascii.u.uScene, 0); gl.uniform1i(progs.ascii.u.uPat, 4);
+    gl.useProgram(progs.show.p); gl.uniform1i(progs.show.u.uC0, 5); gl.uniform1i(progs.show.u.uC1, 6); gl.uniform1i(progs.show.u.uAtlas, 3);
 
     const me = R.meshes;
     me.cube = mesh(Geo.cube()); me.cyl = mesh(Geo.cylinder(10)); me.cone = mesh(Geo.cone(10));
@@ -325,21 +391,34 @@ window.Game = window.Game || {};
 
   /** Recalcula o tamanho da tela, das células de caractere e das texturas. */
   R.resize = function () {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);          // usa toda a densidade do iPhone (3x)
     const cssW = window.innerWidth, cssH = window.innerHeight;
-    const mult = [0.65, 0.85, 1.2][R.detail] ?? 1;
-    const cw = Math.max(5, Math.min(12, Math.round((cssW / 130) * mult)));
-    const ch = Math.round(cw * 1.85);
+    const target = [170, 120, 80][R.detail] ?? 120;                  // colunas desejadas: fino / médio / grosso
+    const cw = Math.max(3, Math.min(12, Math.round(cssW / target)));
+    const ch = Math.round(cw * 1.9);
     cellPx = [Math.round(cw * dpr), Math.round(ch * dpr)];
     cols = Math.ceil((cssW * dpr) / cellPx[0]); rows = Math.ceil((cssH * dpr) / cellPx[1]);
     canvas.width = cols * cellPx[0]; canvas.height = rows * cellPx[1];
     canvas.style.width = canvas.width / dpr + "px"; canvas.style.height = canvas.height / dpr + "px";
-    W = cols * 2; H = rows * 2;                              // cena com 2x2 pixels por célula
-    if (fbScene) { gl.deleteFramebuffer(fbScene.fb); gl.deleteTexture(fbScene.tex); gl.deleteRenderbuffer(fbScene.rb); gl.deleteFramebuffer(fbRefl.fb); gl.deleteTexture(fbRefl.tex); gl.deleteRenderbuffer(fbRefl.rb); }
+    W = cols * SX; H = rows * SY;                                    // cena: 4x8 sub-pixels por célula
+    if (fbScene) {
+      for (const f of [fbScene, fbRefl]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); gl.deleteRenderbuffer(f.rb); }
+      gl.deleteFramebuffer(fbCell.fb); gl.deleteTexture(fbCell.t0); gl.deleteTexture(fbCell.t1);
+    }
     fbScene = colorFBO(0, W, H);
     fbRefl = colorFBO(2, Math.max(64, W >> 1), Math.max(64, H >> 1));
+    // uma textura pequena (1 pixel por célula) com duas camadas: fundo+letra e cor da tinta
+    const t0 = texture(5, cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+    const t1 = texture(6, cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t0, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, t1, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("FBO de células incompleto");
+    fbCell = { fb, t0, t1 };
     R.cols = cols; R.rows = rows;
   };
+
 
   /** Depuração: devolve a imagem 3D "crua" (antes de virar caracteres) como PNG. */
   R.dumpScene = function () {
@@ -500,13 +579,18 @@ window.Game = window.Game || {};
     gl.uniform3f(wu.uCamPos, cam.x, cam.y, cam.z); gl.uniform3f(wu.uLightDir, L[0], L[1], L[2]);
     draw(waterMesh);
 
-    // ---- 4) ASCII: transforma a imagem pequena em caracteres na tela ----
+    // ---- 4) ASCII, em dois passos ----
+    gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null);
+    // A) uma execução por célula: escolhe a letra cuja FORMA mais se parece com o pedaço da imagem
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbCell.fb); gl.viewport(0, 0, cols, rows);
+    const m = progs.ascii; gl.useProgram(m.p); gl.uniform1i(m.u.uN, NG);
+    gl.uniform1i(m.u.uRampN, rampIdx.length); gl.uniform1fv(m.u.uRampCov, rampCov); gl.uniform1iv(m.u.uRampIdx, rampIdx);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // B) desenha as letras escolhidas em resolução total
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.disable(gl.DEPTH_TEST);
-    const a = progs.ascii; gl.useProgram(a.p);
-    gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]);
-    gl.uniform1f(a.u.uRamp, RAMP.length); gl.uniform1f(a.u.uTotal, RAMP.length + EDGE.length);
-    gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const a = progs.show; gl.useProgram(a.p);
+    gl.uniform2f(a.u.uGrid, cols, rows); gl.uniform2f(a.u.uCell, cellPx[0], cellPx[1]); gl.uniform1f(a.u.uN, NG);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.enable(gl.DEPTH_TEST);
   };
 })();

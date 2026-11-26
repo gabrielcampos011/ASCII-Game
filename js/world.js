@@ -151,13 +151,13 @@ window.Game = window.Game || {};
     const CH = 10, nc = (HALF * 2) / CH, chunks = [], all = [];
     for (let cj = 0; cj < nc; cj++) for (let ci = 0; ci < nc; ci++) {
       const x0 = -HALF + ci * CH, z0 = -HALF + cj * CH, start = all.length / 8;
-      for (let k = 0; k < 2600; k++) {
+      for (let k = 0; k < 3800; k++) {
         const x = x0 + rnd() * CH, z = z0 + rnd() * CH, h = height(x, z);
         if (h < 0.45 || h > 6.5) continue;
         const patch = fbm(x * 0.12 + 3, z * 0.12 + 8, 21);
         if (rnd() > 0.55 + patch * 0.5) continue;
         if (Math.hypot(x - RUINS.x, z - RUINS.z) < 3 && rnd() < 0.7) continue;
-        all.push(x, h - 0.05, z, rnd() * 6.283, (0.25 + rnd() * 0.4) * (0.75 + patch * 0.5), 0.17 + rnd() * 0.10, rnd(), rnd() * 6.283);
+        all.push(x, h - 0.05, z, rnd() * 6.283, (0.25 + rnd() * 0.4) * (0.75 + patch * 0.5), 0.07 + rnd() * 0.06, rnd(), rnd() * 6.283);
       }
       chunks.push({ cx: x0 + CH / 2, cz: z0 + CH / 2, start, count: all.length / 8 - start });
     }

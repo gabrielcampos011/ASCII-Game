@@ -60,7 +60,7 @@ window.Game = window.Game || {};
         attackT: -1, attackDir: 1, attackBuf: 0, twist: 0, combo: 0,
       },
       enemies: [], particles: [], orbs: [], ghosts: [], trail: [],
-      cam: { yaw: 1.96, pitch: 0.32, dist: 5.6, x: 0, y: 3, z: -6, tx: 0, ty: 1.5, tz: 0, fov: 1.08, shake: 0, aspect: 1.6 },
+      cam: { yaw: 1.96, pitch: 0.32, dist: 5.0, x: 0, y: 3, z: -6, tx: 0, ty: 1.5, tz: 0, fov: 1.08, shake: 0, aspect: 1.6 },
     };
     s.player.y = Game.World.height(0, 0);
     return s;
@@ -298,7 +298,7 @@ window.Game = window.Game || {};
     c.yaw += inp.camDX * 0.0034 + inp.rot * dt * 1.9;
     c.pitch = clamp(c.pitch + inp.camDY * 0.0030, 0.12, 0.95);
     const portrait = c.aspect < 1;
-    const wantDist = (portrait ? 7.6 : 5.6) + (p.dashT > 0 ? 1.2 : 0);
+    const wantDist = (portrait ? 8.4 : 5.0) + (p.dashT > 0 ? 1.2 : 0);
     c.dist = lerp(c.dist, wantDist, Math.min(1, dt * 6));
     c.fov = lerp(c.fov, (portrait ? 0.98 : 1.0) + (p.dashT > 0 ? 0.16 : 0), Math.min(1, dt * 10));
     const k = 1 - Math.exp(-dt * 11);

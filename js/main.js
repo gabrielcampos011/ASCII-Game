@@ -95,6 +95,9 @@
   } catch (err) {
     console.error(err); fail("Erro ao iniciar o gráfico 3D: " + (err && err.message ? err.message.split("\n")[0] : err)); return;
   }
+  Game.Renderer.detail = window.innerWidth > 800 ? 0 : 1;          // PC: fino; celular: médio
+  $("detail").textContent = ["fino", "médio", "grosso"][Game.Renderer.detail];
+  Game.Renderer.resize();
   window.addEventListener("resize", () => Game.Renderer.resize());
   window.addEventListener("orientationchange", () => setTimeout(() => Game.Renderer.resize(), 150));
   state = newState();

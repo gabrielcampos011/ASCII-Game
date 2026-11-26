@@ -69,7 +69,7 @@ window.Game = window.Game || {};
     const head = M.chain(root, M.T(0, 1.8 + bob, 0.02), M.Rx(lean * 0.6));
     P(R.sph, M.chain(head, M.S(0.46, 0.5, 0.46)), C.skin);
     P(R.sph, M.chain(head, M.T(0, 0.08, -0.04), M.S(0.5, 0.42, 0.5)), C.hair);
-    P(R.torus, M.chain(root, M.T(0, 2.28 + bob, 0), M.Rx(0.18), M.Ry(time * 1.4), M.S(1.05, 1.4, 1.05)), C.halo, 1);
+    P(R.torus, M.chain(root, M.T(0, 2.3 + bob, 0), M.Rx(0.5), M.Ry(time * 1.4), M.S(1.2, 1.6, 1.2)), C.halo, 1);
     // braço esquerdo
     P(R.cube, M.chain(root, M.T(-0.4, 1.5 + bob, 0), M.Rx(-Math.sin(p.walk) * 0.8 * sp - 0.15), M.T(0, -0.34, 0), M.S(0.17, 0.7, 0.19)), C.armor);
     // braço direito + espada
