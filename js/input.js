@@ -56,7 +56,7 @@ window.Game = window.Game || {};
   canvas.addEventListener("pointermove", (e) => {
     const d = drags.get(e.pointerId); if (!d) return;
     const dx = e.clientX - d.x, dy = e.clientY - d.y; d.x = e.clientX; d.y = e.clientY;
-    if (pinching || drags.size >= 2) return;                // 2 dedos = pinça, não gira a câmera
+    if (pinching) return;                                   // só durante uma pinça de verdade a câmera fica parada
     st.camDX -= dx; st.camDY += dy;
   });
   const endDrag = (e) => { drags.delete(e.pointerId); };
@@ -88,24 +88,29 @@ window.Game = window.Game || {};
   zone.addEventListener("pointerup", endStick); zone.addEventListener("pointercancel", endStick);
 
   // ---------- Pinça (zoom nas letras) ----------
-  // Usa os eventos de TOQUE do documento inteiro: assim funciona em qualquer parte da tela, até em cima
-  // da zona do joystick. Ao detectar 2 dedos, o joystick e a câmera são soltos. O zoom acompanha
-  // o quanto os dedos se afastam: abrir 2x a distância = 2x o zoom.
-  let pinchD0 = 0, pinchZ0 = 1;
+  // CUIDADO: jogar no celular já usa DOIS dedos ao mesmo tempo (polegar esquerdo no joystick + polegar
+  // direito girando a câmera). Por isso a pinça só vale quando NENHUM dos dedos está no joystick
+  // (#stickZone) nem em um botão. Além disso ela só "pega" depois que a distância entre os dedos muda
+  // de forma clara (zona morta), e só então a câmera para de girar.
+  let pinchD0 = 0, pinchZ0 = 1, pinchOn = false;
   const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-  const onBtn = (t) => t.target && t.target.closest && t.target.closest("button");
+  const forbidden = (t) => !!(t.target && ((t.target.id === "stickZone") || (t.target.closest && t.target.closest("button"))));
+  const freeTouches = (e) => e.touches.length >= 2 && ![...e.touches].some(forbidden);
   document.addEventListener("touchstart", (e) => {
-    if (e.touches.length < 2 || onBtn(e.touches[0]) || onBtn(e.touches[1])) return;
-    if (!Game.Renderer || !Game.Renderer.getZoom) return;
-    pinching = true; pinchD0 = Math.max(20, tdist(e.touches[0], e.touches[1])); pinchZ0 = Game.Renderer.getZoom();
-    stickId = null; st.stickX = st.stickY = 0; base.classList.remove("on"); drags.clear();
+    if (!freeTouches(e) || !Game.Renderer || !Game.Renderer.getZoom) { pinchOn = false; return; }
+    pinchOn = true; pinchD0 = Math.max(20, tdist(e.touches[0], e.touches[1])); pinchZ0 = Game.Renderer.getZoom();
   }, { passive: true });
   document.addEventListener("touchmove", (e) => {
-    if (!pinching || e.touches.length < 2) return;
-    const R = Game.Renderer, z = Math.round(pinchZ0 * (tdist(e.touches[0], e.touches[1]) / pinchD0));
+    if (!pinchOn || !freeTouches(e)) return;
+    const ratio = tdist(e.touches[0], e.touches[1]) / pinchD0;
+    if (!pinching) {                                       // zona morta: só vira pinça se os dedos mudarem ~14%
+      if (ratio > 0.86 && ratio < 1.16) return;
+      pinching = true; drags.clear();
+    }
+    const R = Game.Renderer, z = Math.round(pinchZ0 * ratio);
     if (z !== R.getZoom()) R.setZoom(z);
   }, { passive: true });
-  const endPinch = (e) => { if (e.touches.length < 2) pinching = false; };
+  const endPinch = (e) => { if (e.touches.length < 2) { pinching = false; pinchOn = false; } };
   document.addEventListener("touchend", endPinch, { passive: true }); document.addEventListener("touchcancel", endPinch, { passive: true });
 
   // ---------- Botões de toque ----------
