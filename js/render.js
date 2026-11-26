@@ -412,6 +412,7 @@ window.Game = window.Game || {};
 
     const me = R.meshes;
     me.cube = mesh(Geo.cube()); me.cyl = mesh(Geo.cylinder(10)); me.cone = mesh(Geo.cone(10));
+    me.tap = mesh(Geo.taper(1.35, 10)); me.tapT = mesh(Geo.taper(1.55, 12));   // membros e tronco (mais largos em cima)
     me.sph = mesh(Geo.sphere(8, 12)); me.torus = mesh(Geo.torus(0.4, 0.035, 28, 6));
     skyMesh = mesh(Geo.sphere(12, 18));
 

@@ -94,6 +94,23 @@ window.Game = window.Game || {};
     return finish(P, N, I);
   }
 
+  /** Cilindro AFILADO (tronco de cone): raio 0.5 embaixo (y=0) e 0.5*ratio em cima (y=1). Base de braços, pernas e tronco. */
+  function taper(ratio = 1.4, seg = 10) {
+    const P = [], N = [], I = [], rb = 0.5, rt = 0.5 * ratio, nl = Math.hypot(1, rt - rb);
+    for (let i = 0; i <= seg; i++) {
+      const a = (i / seg) * TAU, c = Math.cos(a), s = Math.sin(a);
+      P.push(c * rb, 0, s * rb, c * rt, 1, s * rt);
+      N.push(c / nl, -(rt - rb) / nl, s / nl, c / nl, -(rt - rb) / nl, s / nl);
+    }
+    for (let i = 0; i < seg; i++) { const b = i * 2; I.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
+    for (const [y, r, ny] of [[1, rt, 1], [0, rb, -1]]) {                 // tampas de cima e de baixo
+      const c0 = P.length / 3; P.push(0, y, 0); N.push(0, ny, 0);
+      for (let i = 0; i <= seg; i++) { const a = (i / seg) * TAU; P.push(Math.cos(a) * r, y, Math.sin(a) * r); N.push(0, ny, 0); }
+      for (let i = 0; i < seg; i++) I.push(c0, c0 + 1 + i, c0 + 2 + i);
+    }
+    return finish(P, N, I);
+  }
+
   /** Uma folha de grama: tira fina que afina até a ponta (x = largura, y = 0..1). */
   function blade() {
     const P = [], I = [], levels = 4;
@@ -141,5 +158,5 @@ window.Game = window.Game || {};
     for (let i = 0; i < m.idx.length; i++) this.idx.push(base + m.idx[i]);
   };
 
-  Game.Geo = { cube, cylinder, cone, sphere, torus, blade, Builder };
+  Game.Geo = { cube, cylinder, cone, sphere, torus, taper, blade, Builder };
 })();

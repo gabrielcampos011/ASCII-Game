@@ -73,7 +73,7 @@ window.Game = window.Game || {};
         x: 0, z: 0, y: 1, yaw: 1.96, vx: 0, vz: 0, speed01: 0, walk: 0, moveMag: 0,
         hp: 100, maxHp: 100, invuln: 0, flash: 0,
         dashT: 0, dashCd: 0, dashX: 0, dashZ: 1, ghostT: 0,
-        attackT: -1, attackDir: 1, attackBuf: 0, twist: 0, combo: 0,
+        attackT: -1, attackDir: 1, attackBuf: 0, twist: 0, combo: 0, cloakA: 0.15, cloakV: 0, stepIdx: 0,
       },
       enemies: [], particles: [], orbs: [], ghosts: [], trail: [], decals: [], sfx: [],
       cam: { yaw: 1.96, pitch: 0.32, dist: 5.0, x: 0, y: 3, z: -6, tx: 0, ty: 1.5, tz: 0, fov: 1.08, shake: 0, aspect: 1.6 },
@@ -207,6 +207,9 @@ window.Game = window.Game || {};
     }
     const spd = Math.hypot(p.vx, p.vz);
     p.speed01 = clamp(spd / 6.4, 0, 1.4);
+    // capa/cabelo: uma MOLA amortecida. O alvo depende da velocidade; a mola faz a capa ficar para trás e balançar.
+    const cTarget = 0.1 + 0.55 * p.speed01 + (p.dashT > 0 ? 0.75 : 0) + (p.attackT >= 0 ? 0.15 : 0);
+    p.cloakV += ((cTarget - p.cloakA) * 70 - p.cloakV * 8) * dt; p.cloakA += p.cloakV * dt;
     p.walk += dt * (4 + spd * 1.15);
     const stepIdx = Math.floor(p.walk / Math.PI);                      // a cada meia volta do ciclo de andar = um pé no chão
     if (stepIdx !== p.stepIdx) { p.stepIdx = stepIdx; if (spd > 1.6 && p.dashT <= 0 && p.attackT < 0) sfx(s, Game.World.height(p.x, p.z) < -0.05 ? "splash" : "step", p.x, p.z); }
@@ -236,7 +239,7 @@ window.Game = window.Game || {};
     const p = s.player, H = Game.World.height;
     for (let i = s.enemies.length - 1; i >= 0; i--) {
       const e = s.enemies[i], def = ENEMY[e.type];
-      e.age += dt; e.flash = Math.max(0, e.flash - dt);
+      e.age += dt; e.flash = Math.max(0, e.flash - dt); e.mv = Math.max(0, (e.mv || 0) - dt * 5);
       if (e.dying) {
         e.dieT += dt;
         if (e.dieT > 0.45) {
@@ -260,7 +263,7 @@ window.Game = window.Game || {};
           let mx = dx / dist, mz = dz / dist;
           if (e.type === "goblin") { const sw = Math.sin(s.t * 1.8 + e.phase) * 0.45; const t = mx; mx += -mz * sw; mz += t * sw; }
           const l = Math.hypot(mx, mz) || 1;
-          e.x += (mx / l) * def.speed * dt; e.z += (mz / l) * def.speed * dt; e.walk += dt * def.speed * 1.6;
+          e.x += (mx / l) * def.speed * dt; e.z += (mz / l) * def.speed * dt; e.walk += dt * def.speed * 1.9; e.mv = 1;
         }
         if (dist < def.range && e.atkCd <= 0) { e.state = "windup"; e.st = 0; sfx(s, "growl", e.x, e.z, { big: e.type === "ogre" }); }
       } else if (e.state === "windup") {
