@@ -52,24 +52,14 @@ window.Game = window.Game || {};
     if (e.pointerType === "mouse") return;
     st.any = true; try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ok */ } drags.set(e.pointerId, { x: e.clientX, y: e.clientY });
   });
-  // Pinça (2 dedos): afastar = ampliar as letras, aproximar = reduzir. Cada "degrau" muda 1x de zoom.
-  let pinchD = 0;
-  const pinchDist = () => { const [a, b] = [...drags.values()]; return Math.hypot(a.x - b.x, a.y - b.y); };
+  let pinching = false;                                     // true enquanto há 2 dedos fazendo pinça (veja mais abaixo)
   canvas.addEventListener("pointermove", (e) => {
     const d = drags.get(e.pointerId); if (!d) return;
     const dx = e.clientX - d.x, dy = e.clientY - d.y; d.x = e.clientX; d.y = e.clientY;
-    if (drags.size >= 2) {                                   // pinça: não gira a câmera
-      const nd = pinchDist(); if (!pinchD) pinchD = nd;
-      const R = Game.Renderer;
-      if (R && R.setZoom) {
-        if (nd / pinchD > 1.28) { R.setZoom(R.getZoom() + 1); pinchD = nd; }
-        else if (nd / pinchD < 0.78) { R.setZoom(R.getZoom() - 1); pinchD = nd; }
-      }
-      return;
-    }
+    if (pinching || drags.size >= 2) return;                // 2 dedos = pinça, não gira a câmera
     st.camDX -= dx; st.camDY += dy;
   });
-  const endDrag = (e) => { drags.delete(e.pointerId); pinchD = 0; };
+  const endDrag = (e) => { drags.delete(e.pointerId); };
   canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
 
   // ---------- Toque: joystick flutuante (aparece onde você encosta) ----------
@@ -96,6 +86,27 @@ window.Game = window.Game || {};
     stickId = null; st.stickX = st.stickY = 0; base.classList.remove("on");
   };
   zone.addEventListener("pointerup", endStick); zone.addEventListener("pointercancel", endStick);
+
+  // ---------- Pinça (zoom nas letras) ----------
+  // Usa os eventos de TOQUE do documento inteiro: assim funciona em qualquer parte da tela, até em cima
+  // da zona do joystick. Ao detectar 2 dedos, o joystick e a câmera são soltos. O zoom acompanha
+  // o quanto os dedos se afastam: abrir 2x a distância = 2x o zoom.
+  let pinchD0 = 0, pinchZ0 = 1;
+  const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const onBtn = (t) => t.target && t.target.closest && t.target.closest("button");
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length < 2 || onBtn(e.touches[0]) || onBtn(e.touches[1])) return;
+    if (!Game.Renderer || !Game.Renderer.getZoom) return;
+    pinching = true; pinchD0 = Math.max(20, tdist(e.touches[0], e.touches[1])); pinchZ0 = Game.Renderer.getZoom();
+    stickId = null; st.stickX = st.stickY = 0; base.classList.remove("on"); drags.clear();
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (!pinching || e.touches.length < 2) return;
+    const R = Game.Renderer, z = Math.round(pinchZ0 * (tdist(e.touches[0], e.touches[1]) / pinchD0));
+    if (z !== R.getZoom()) R.setZoom(z);
+  }, { passive: true });
+  const endPinch = (e) => { if (e.touches.length < 2) pinching = false; };
+  document.addEventListener("touchend", endPinch, { passive: true }); document.addEventListener("touchcancel", endPinch, { passive: true });
 
   // ---------- Botões de toque ----------
   const press = (id, fn) => {

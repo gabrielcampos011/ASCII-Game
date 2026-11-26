@@ -48,6 +48,19 @@ window.Game = window.Game || {};
     }
   }
 
+  /** Jato de sangue: gotas saem na direção do golpe, em leque, e depois mancham o chão. */
+  function blood(s, x, y, z, dx, dz, n, power) {
+    const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+    for (let i = 0; i < n && s.particles.length < 340; i++) {
+      const a = rand(-0.95, 0.95), c = Math.cos(a), sn = Math.sin(a), sp = rand(2.5, 7.5) * power;
+      s.particles.push({
+        x: x + rand(-0.15, 0.15), y: y + rand(-0.3, 0.3), z: z + rand(-0.15, 0.15),
+        vx: (dx * c - dz * sn) * sp, vy: rand(1.5, 5.5) * power, vz: (dx * sn + dz * c) * sp,
+        life: rand(0.7, 1.3), max: 1.3, size: rand(0.07, 0.17), color: [0.65, 0.02, 0.05], em: 0.3, grav: 12, stick: true,
+      });
+    }
+  }
+
   // ---------- Novo jogo ----------
   function newGame(w) {
     world = w;
@@ -59,7 +72,7 @@ window.Game = window.Game || {};
         dashT: 0, dashCd: 0, dashX: 0, dashZ: 1, ghostT: 0,
         attackT: -1, attackDir: 1, attackBuf: 0, twist: 0, combo: 0,
       },
-      enemies: [], particles: [], orbs: [], ghosts: [], trail: [],
+      enemies: [], particles: [], orbs: [], ghosts: [], trail: [], decals: [],
       cam: { yaw: 1.96, pitch: 0.32, dist: 5.0, x: 0, y: 3, z: -6, tx: 0, ty: 1.5, tz: 0, fov: 1.08, shake: 0, aspect: 1.6 },
     };
     s.player.y = Game.World.height(0, 0);
@@ -110,7 +123,9 @@ window.Game = window.Game || {};
     e.kx = ((e.x - p.x) / d) * kb; e.kz = ((e.z - p.z) / d) * kb;
     if (e.state === "windup" && e.type === "goblin") { e.state = "recover"; e.st = 0; }      // golpe interrompe goblin
     s.hitstop = crit ? 0.1 : 0.055; s.cam.shake = Math.max(s.cam.shake, crit ? 0.45 : 0.22);
-    burst(s, e.x, e.y + 0.9, e.z, crit ? 18 : 10, { color: crit ? [1, 0.9, 0.4] : [1, 1, 1], speed: 6, life: 0.4 });
+    burst(s, e.x, e.y + 0.9, e.z, crit ? 10 : 5, { color: crit ? [1, 0.9, 0.4] : [1, 1, 1], speed: 6, life: 0.3 });   // faíscas
+    const sc = ENEMY[e.type].scale;
+    blood(s, e.x, e.y + 0.95 * sc, e.z, e.x - p.x, e.z - p.z, crit ? 34 : 20, e.type === "ogre" ? 1.2 : 1);
     if (e.hp <= 0 && !e.dying) { e.dying = true; e.dieT = 0; s.kills++; }
   }
 
@@ -221,6 +236,7 @@ window.Game = window.Game || {};
         e.dieT += dt;
         if (e.dieT > 0.45) {
           burst(s, e.x, e.y + 0.8 * def.scale, e.z, e.type === "ogre" ? 36 : 18, { color: [1, 0.7, 0.3], speed: 6, life: 0.7, size: 0.16 });
+          blood(s, e.x, e.y + 0.7 * def.scale, e.z, Math.cos(e.phase * 5), Math.sin(e.phase * 5), e.type === "ogre" ? 60 : 36, 0.9);   // morte: explosão de sangue
           if (Math.random() < def.orb) s.orbs.push({ x: e.x, z: e.z, t: 0 });
           s.enemies.splice(i, 1);
         }
@@ -278,8 +294,14 @@ window.Game = window.Game || {};
       const q = s.particles[i];
       q.life -= dt; if (q.life <= 0) { s.particles.splice(i, 1); continue; }
       q.vy -= q.grav * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt;
-      const g = Game.World.height(q.x, q.z); if (q.y < Math.max(g, 0) && q.vy < 0) { q.y = Math.max(g, 0); q.vy *= -0.3; q.vx *= 0.6; q.vz *= 0.6; }
+      const g = Game.World.height(q.x, q.z); if (q.y < Math.max(g, 0) && q.vy < 0) {
+        if (q.stick) {                                                    // gota de sangue: vira mancha no chão
+          if (g > 0.05) { s.decals.push({ x: q.x, y: g + 0.26 + rand(0, 0.12), z: q.z, size: rand(0.25, 0.65) * (q.size / 0.12), yaw: rand(0, 6.283), life: 18, max: 18 }); if (s.decals.length > 170) s.decals.shift(); }
+          s.particles.splice(i, 1); continue;
+        }
+        q.y = Math.max(g, 0); q.vy *= -0.3; q.vx *= 0.6; q.vz *= 0.6; }
     }
+    for (let i = s.decals.length - 1; i >= 0; i--) { s.decals[i].life -= dt; if (s.decals[i].life <= 0) s.decals.splice(i, 1); }
     for (let i = s.ghosts.length - 1; i >= 0; i--) { s.ghosts[i].life -= dt; if (s.ghosts[i].life <= 0) s.ghosts.splice(i, 1); }
     for (let i = s.trail.length - 1; i >= 0; i--) { s.trail[i].life -= dt; if (s.trail[i].life <= 0) s.trail.splice(i, 1); }
     for (let i = s.orbs.length - 1; i >= 0; i--) {

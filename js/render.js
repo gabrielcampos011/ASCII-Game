@@ -28,26 +28,42 @@ window.Game = window.Game || {};
   const SHADOW = 1024, EXT = 34;
   const L = (() => { const v = [0.62, 0.5, -0.25], l = Math.hypot(...v); return v.map((x) => x / l); })();
 
-  let zoom = 1;
+  let zoom = 1, RW = 64, RH = 64;
   let gl, canvas, world, W = 2, H = 2, cols = 10, rows = 10, cellPx = [8, 14];
   let progs = {}, U = {}, fbShadow, texShadow, fbScene, texScene, fbRefl, texRefl, texAtlas, texPat, fbCell, rampIdx, rampCov;
   let staticMesh, waterMesh, skyMesh, ribbon, grassBuf, grassVAO, bladeCount, chunks;
 
   // =============================== SHADERS ===============================
+  // Balanço do vento nas árvores: o vértice anda conforme o "peso" (0 = base parada, 1 = ponta solta).
+  // As rajadas (gust) passam lentamente pelo mapa, então as árvores não balançam todas juntas.
+  const SWAY = `
+    layout(location=5) in vec2 aSway;
+    vec3 sway(vec3 p, vec2 sw, float t){
+      if (sw.x <= 0.0) return p;
+      float gust = 0.5 + 0.5 * sin(t * 0.37 + p.x * 0.035 + p.z * 0.05);
+      float a = t * (1.2 + 0.6 * gust) + p.x * 0.13 + p.z * 0.1 + sw.y;
+      float amp = sw.x * (0.14 + 0.30 * gust);
+      p.x += (sin(a) + 0.45 * sin(a * 2.3 + 1.7)) * amp;
+      p.z += (cos(a * 0.8 + 0.6) + 0.3 * sin(a * 1.9)) * amp * 0.6;
+      return p;
+    }`;
+
   const DEPTH_VS = HDR + `
     layout(location=0) in vec3 aPos;
-    uniform mat4 uMVP;
-    void main(){ gl_Position = uMVP * vec4(aPos, 1.0); }`;
+    uniform mat4 uMVP; uniform float uTime;
+    ${SWAY}
+    void main(){ gl_Position = uMVP * vec4(sway(aPos, aSway, uTime), 1.0); }`;
   const DEPTH_FS = HDR + `void main(){}`;
 
   const LIT_VS = HDR + `
     layout(location=0) in vec3 aPos;
     layout(location=1) in vec3 aNrm;
     layout(location=2) in vec3 aCol;
-    uniform mat4 uModel, uViewProj, uLightVP;
+    uniform mat4 uModel, uViewProj, uLightVP; uniform float uTime;
+    ${SWAY}
     out vec3 vN; out vec3 vCol; out vec3 vWorld; out vec4 vLP;
     void main(){
-      vec4 w = uModel * vec4(aPos, 1.0);
+      vec4 w = uModel * vec4(aPos, 1.0); w.xyz = sway(w.xyz, aSway, uTime);
       vWorld = w.xyz; vN = normalize(mat3(uModel) * aNrm); vCol = aCol; vLP = uLightVP * w;
       gl_Position = uViewProj * w;
     }`;
@@ -152,28 +168,46 @@ window.Game = window.Game || {};
   const WATER_VS = HDR + `
     layout(location=0) in vec3 aPos;
     layout(location=2) in vec3 aCol;
-    uniform mat4 uViewProj; out vec3 vWorld; out float vDepth;
-    void main(){ vWorld = aPos; vDepth = aCol.x; gl_Position = uViewProj * vec4(aPos, 1.0); }`;
+    uniform mat4 uViewProj; uniform float uTime; out vec3 vWorld; out float vDepth;
+    void main(){
+      vec3 p = aPos;
+      // a superfície sobe e desce com o vento (menos perto da margem, para não "descolar" da terra)
+      float gust = 0.6 + 0.4 * sin(uTime * 0.4 + p.x * 0.05);
+      p.y += (sin(p.x * 0.9 + p.z * 0.45 - uTime * 2.1) + 0.6 * sin(p.z * 1.3 - uTime * 1.6 + p.x * 0.3)) * 0.04 * gust * smoothstep(0.0, 0.7, aCol.x);
+      vWorld = p; vDepth = aCol.x; gl_Position = uViewProj * vec4(p, 1.0);
+    }`;
   const WATER_FS = HDR + `
     in vec3 vWorld; in float vDepth;
     uniform sampler2D uRefl; uniform vec2 uRes; uniform float uTime, uExposure; uniform vec3 uCamPos, uLightDir;
     out vec4 o;
     void main(){
       vec2 uv = gl_FragCoord.xy / uRes; vec3 p = vWorld;
-      vec2 w = vec2(sin(p.x * 1.1 + uTime * 1.3) + 0.6 * sin(p.z * 1.9 - uTime * 1.1) + 0.4 * sin((p.x + p.z) * 2.7 + uTime * 2.0),
-                    cos(p.z * 1.2 + uTime * 1.1) + 0.6 * sin(p.x * 2.1 + uTime * 1.4) + 0.4 * cos((p.x - p.z) * 2.3 - uTime * 1.7));
-      vec2 off = w * 0.007;
-      vec3 refl = texture(uRefl, clamp(uv + off, 0.002, 0.998)).rgb;
+      // VENTO: ondas viajando na direção do vento + rajadas que passam sobre a lagoa
+      vec2 wd = normalize(vec2(1.0, 0.45)), cw = vec2(-wd.y, wd.x);
+      float gust = 0.6 + 0.4 * sin(uTime * 0.5 + p.x * 0.04 + p.z * 0.03);
+      float k1 = dot(p.xz, wd) * 1.4 - uTime * 2.4, k2 = dot(p.xz, cw) * 2.3 - uTime * 1.7, k3 = dot(p.xz, wd) * 3.7 - uTime * 3.6 + sin(p.z * 1.1) * 0.5;
+      vec2 slope = (wd * (cos(k1) * 0.55 + cos(k3) * 0.25) + cw * cos(k2) * 0.3) * (0.55 + 0.9 * gust);
+      vec2 off = slope * 0.013;                                       // quanto o reflexo "treme"
+      // reflexo: 3 amostras esticadas na vertical (reflexo na água fica alongado) e mais brilhante
+      vec3 refl = (texture(uRefl, clamp(uv + off, 0.002, 0.998)).rgb * 0.5
+                 + texture(uRefl, clamp(uv + off + vec2(0.0, 0.006), 0.002, 0.998)).rgb * 0.25
+                 + texture(uRefl, clamp(uv + off - vec2(0.0, 0.006), 0.002, 0.998)).rgb * 0.25) * 1.3;
       vec3 V = normalize(uCamPos - p);
-      float fres = clamp(0.3 + 0.7 * pow(1.0 - V.y, 3.0), 0.0, 1.0);
-      vec3 body = mix(vec3(0.06, 0.30, 0.34), vec3(0.01, 0.06, 0.11), smoothstep(0.0, 1.8, vDepth)) * uExposure;
-      vec3 col = mix(body, refl, fres * 0.85 + 0.1);
-      vec3 N = normalize(vec3(-off.x * 9.0, 1.0, -off.y * 9.0));
-      float spec = pow(max(dot(reflect(-uLightDir, N), V), 0.0), 70.0);
-      col += vec3(0.8, 0.92, 1.0) * spec * 1.6;
-      float foam = smoothstep(0.4, 0.0, vDepth) * (0.5 + 0.5 * sin(vDepth * 30.0 - uTime * 2.2 + p.x * 0.7));
+      float fres = clamp(0.38 + 0.62 * pow(1.0 - V.y, 2.2), 0.0, 1.0);
+      vec3 body = mix(vec3(0.05, 0.26, 0.30), vec3(0.01, 0.05, 0.10), smoothstep(0.0, 1.8, vDepth)) * uExposure;
+      vec3 col = mix(body, refl, fres * 0.94 + 0.06);
+      // brilho da lua nas ondinhas (cintilação que se move) + faixa de lua mais larga
+      vec3 N = normalize(vec3(-slope.x * 0.9, 1.0, -slope.y * 0.9));
+      vec3 Rv = reflect(-uLightDir, N);
+      float spec = pow(max(dot(Rv, V), 0.0), 90.0), path = pow(max(dot(Rv, V), 0.0), 18.0);
+      col += vec3(0.85, 0.95, 1.0) * (spec * 1.9 + path * 0.35);
+      // riscos de vento: faixas claras que correm sobre a água
+      float streak = smoothstep(0.55, 1.0, sin(dot(p.xz, cw) * 3.1 + sin(dot(p.xz, wd) * 0.6 - uTime * 0.8) * 2.0)) * gust;
+      col += vec3(0.35, 0.55, 0.65) * streak * 0.12;
+      // espuma na margem, "lambendo" a terra
+      float foam = smoothstep(0.38, 0.0, vDepth + 0.08 * sin(uTime * 1.6 + p.x * 0.7 + p.z * 0.5)) * (0.5 + 0.5 * sin(vDepth * 30.0 - uTime * 2.2 + p.x * 0.7));
       col += vec3(0.45, 0.8, 0.8) * foam * 0.55;
-      o = vec4(col, (spec > 0.35 || foam > 0.7) ? 1.0 : 0.0);
+      o = vec4(col, (spec > 0.3 || foam > 0.7) ? 1.0 : 0.0);
     }`;
 
   const ASCII_VS = HDR + `void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
@@ -279,6 +313,7 @@ window.Game = window.Game || {};
     bufs.pos = attr(0, d.pos, 3);
     if (d.nrm) bufs.nrm = attr(1, d.nrm, 3);
     if (d.col) bufs.col = attr(2, d.col, 3);
+    if (d.sw) bufs.sw = attr(5, d.sw, 2);
     let count;
     if (d.idx) { const e = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, e); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, d.idx, gl.STATIC_DRAW); count = d.idx.length; }
     else count = d.pos.length / 3;
@@ -429,7 +464,8 @@ window.Game = window.Game || {};
       gl.deleteFramebuffer(fbCell.fb); gl.deleteTexture(fbCell.t0); gl.deleteTexture(fbCell.t1);
     }
     fbScene = colorFBO(0, W, H);
-    fbRefl = colorFBO(2, Math.max(64, W >> 1), Math.max(64, H >> 1));
+    RW = Math.max(64, Math.round(W * 0.75)); RH = Math.max(64, Math.round(H * 0.75));
+    fbRefl = colorFBO(2, RW, RH);
     // uma textura pequena (1 pixel por célula) com duas camadas: fundo+letra e cor da tinta
     const t0 = texture(5, cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
     const t1 = texture(6, cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
@@ -483,7 +519,7 @@ window.Game = window.Game || {};
     gl.uniform3f(u.uAmbUp, 0.22, 0.31, 0.44); gl.uniform3f(u.uAmbDown, 0.07, 0.10, 0.14);
     gl.uniform3f(u.uCamPos, cam.x, cam.y, cam.z); gl.uniform3f(u.uFogCol, 0.10, 0.20, 0.26);
     gl.uniform3f(u.uRimCol, 0.4, 0.62, 1.0); gl.uniform1f(u.uRim, 0.55);
-    gl.uniform1f(u.uFogDen, 0.011); gl.uniform1f(u.uExposure, 1.7); gl.uniform1f(u.uClip, clip); gl.uniform1f(u.uFill, 0.06);
+    gl.uniform1f(u.uFogDen, 0.011); gl.uniform1f(u.uExposure, 1.7); gl.uniform1f(u.uClip, clip); gl.uniform1f(u.uTime, R._t); gl.uniform1f(u.uFill, 0.06);
   }
 
   /** Desenha tudo que se mexe, usando "part" (que muda conforme a passada). */
@@ -498,6 +534,10 @@ window.Game = window.Game || {};
       part(me.sph, M.chain(M.T(o.x, y, o.z), M.S(k, k, k)), [0.35, 1.0, 0.5], 1);
     }
     if (pass === "reflect") return;
+    for (const d of s.decals) {                                   // sangue no chão (some devagar)
+      const k = Math.min(1, d.life / 4);
+      part(me.sph, M.chain(M.T(d.x, d.y, d.z), M.Ry(d.yaw), M.S(d.size, 0.05, d.size * 0.65)), [0.46 * k, 0.012 * k, 0.03 * k], 0.3);
+    }
     for (const g of s.ghosts) {
       const k = g.life / g.max;
       Game.Models.drawPlayer(part, { x: g.x, y: g.y, z: g.z, yaw: g.yaw, walk: g.walk, speed01: 1, attackT: -1, dashT: 1, flash: 0, attackDir: 1, twist: 0 }, T, { color: [0.2 * k, 0.8 * k, 1.0 * k], em: 0.9 });
@@ -550,6 +590,7 @@ window.Game = window.Game || {};
   }
 
   R.render = function (s) {
+    R._t = s.t;
     const cam = s.cam, p = s.player, me = R.meshes;
     cam.aspect = canvas.width / canvas.height;
     const view = M.lookAt([cam.x, cam.y, cam.z], [cam.tx, cam.ty, cam.tz], [0, 1, 0]);
@@ -572,7 +613,7 @@ window.Game = window.Game || {};
     // ---- 1) SOMBRA ----
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbShadow); gl.viewport(0, 0, SHADOW, SHADOW);
     gl.clear(gl.DEPTH_BUFFER_BIT);
-    gl.useProgram(progs.depth.p); const du2 = progs.depth.u;
+    gl.useProgram(progs.depth.p); const du2 = progs.depth.u; gl.uniform1f(du2.uTime, s.t);
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
     gl.uniformMatrix4fv(du2.uMVP, false, lightVP); draw(staticMesh);
     drawEntities((m, mat, c, em) => { if (em >= 1) return; gl.uniformMatrix4fv(du2.uMVP, false, M.mul(lightVP, mat)); draw(m); }, s, "shadow");
@@ -591,7 +632,7 @@ window.Game = window.Game || {};
     };
 
     // ---- 2) REFLEXO (mundo espelhado em y=0; descarta o que está abaixo da água) ----
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbRefl.fb); gl.viewport(0, 0, Math.max(64, W >> 1), Math.max(64, H >> 1));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbRefl.fb); gl.viewport(0, 0, RW, RH);
     gl.clearColor(0.03, 0.07, 0.1, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     drawSky(vpR);
     setLit(vpR, cam, -0.01); gl.uniform1f(progs.lit.u.uEmissive, 0);

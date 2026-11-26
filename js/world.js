@@ -76,7 +76,7 @@ window.Game = window.Game || {};
       const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
       const c = terrainColor(x, z, h, ny);
       const v = 0.92 + 0.16 * Game.hash(x, z, 1);
-      B.pos.push(x, h, z); B.nrm.push(nx, ny, nz); B.col.push(c[0] * v, c[1] * v, c[2] * v);
+      B.pos.push(x, h, z); B.nrm.push(nx, ny, nz); B.col.push(c[0] * v, c[1] * v, c[2] * v); B.sw.push(0, 0);
     }
     for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
       const a = j * n + i, b = a + 1, c = a + n, d = c + 1;
@@ -110,11 +110,12 @@ window.Game = window.Game || {};
       if (cellUsed.has(key)) continue;
       cellUsed.add(key);
       const s = 0.8 + rnd() * 0.9, tint = rnd();
-      B.add(cyl, x, h - 0.2, z, 0, 0.55 * s, 2.6 * s, 0.55 * s, [0.30, 0.18, 0.11], 0.4);
+      const sway = { base: h, h: 6.3 * s, phase: Game.hash(x, z, 7) * 6.283 };      // cada árvore balança com uma fase própria
+      B.add(cyl, x, h - 0.2, z, 0, 0.55 * s, 2.6 * s, 0.55 * s, [0.30, 0.18, 0.11], 0.4, sway);
       const leaf = tint < 0.7 ? [0.07, 0.32, 0.22] : [0.10, 0.40, 0.16];
-      B.add(cone, x, h + 1.0 * s, z, rnd() * 6, 3.8 * s, 2.8 * s, 3.8 * s, leaf, 0.55);
-      B.add(cone, x, h + 2.5 * s, z, rnd() * 6, 3.0 * s, 2.5 * s, 3.0 * s, leaf, 0.5);
-      B.add(cone, x, h + 3.9 * s, z, rnd() * 6, 2.0 * s, 2.3 * s, 2.0 * s, leaf, 0.4);
+      B.add(cone, x, h + 1.0 * s, z, rnd() * 6, 3.8 * s, 2.8 * s, 3.8 * s, leaf, 0.55, sway);
+      B.add(cone, x, h + 2.5 * s, z, rnd() * 6, 3.0 * s, 2.5 * s, 3.0 * s, leaf, 0.5, sway);
+      B.add(cone, x, h + 3.9 * s, z, rnd() * 6, 2.0 * s, 2.3 * s, 2.0 * s, leaf, 0.4, sway);
       colliders.push({ x, z, r: 0.6 });
       trees.push({ x, z });
     }
@@ -170,7 +171,7 @@ window.Game = window.Game || {};
     }
 
     return {
-      static: { pos: new Float32Array(B.pos), nrm: new Float32Array(B.nrm), col: new Float32Array(B.col), idx: new Uint32Array(B.idx) },
+      static: { pos: new Float32Array(B.pos), nrm: new Float32Array(B.nrm), col: new Float32Array(B.col), sw: new Float32Array(B.sw), idx: new Uint32Array(B.idx) },
       water: { pos: new Float32Array(wp), nrm: new Float32Array(wp.length), col: new Float32Array(wd), idx: new Uint32Array(wi) },
       grass: new Float32Array(all), chunks, colliders, fireflies, runes,
     };

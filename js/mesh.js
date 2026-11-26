@@ -121,8 +121,8 @@ window.Game = window.Game || {};
   };
 
   /** Junta várias formas posicionadas no mundo numa malha só (cenário estático). */
-  function Builder() { this.pos = []; this.nrm = []; this.col = []; this.idx = []; }
-  Builder.prototype.add = function (m, x, y, z, yaw, sx, sy, sz, color, grad = 0) {
+  function Builder() { this.pos = []; this.nrm = []; this.col = []; this.idx = []; this.sw = []; }
+  Builder.prototype.add = function (m, x, y, z, yaw, sx, sy, sz, color, grad = 0, sway = null) {
     const c = Math.cos(yaw), s = Math.sin(yaw), base = this.pos.length / 3, span = (m.maxY - m.minY) || 1;
     for (let i = 0; i < m.pos.length; i += 3) {
       const px = m.pos[i] * sx, py = m.pos[i + 1] * sy, pz = m.pos[i + 2] * sz;
@@ -134,6 +134,9 @@ window.Game = window.Game || {};
       const ly = (m.pos[i + 1] - m.minY) / span;
       const shade = (1 - grad * (1 - ly)) * (0.9 + 0.2 * Game.hash(wx * 3.1, wz * 2.3, wy * 1.7));
       this.col.push(color[0] * shade, color[1] * shade, color[2] * shade);
+      // peso do balanço: 0 na base da árvore, cresce até 1 na ponta (a base fica parada, o topo balança)
+      const wgt = sway ? Math.pow(Math.max(0, Math.min(1, (wy - sway.base) / sway.h)), 1.6) : 0;
+      this.sw.push(wgt, sway ? sway.phase : 0);
     }
     for (let i = 0; i < m.idx.length; i++) this.idx.push(base + m.idx[i]);
   };
